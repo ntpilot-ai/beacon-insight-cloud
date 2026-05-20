@@ -43,27 +43,22 @@ export default function Dashboard() {
   const [events, setEvents] = useState<BeaconEvent[]>([]);
 
   useEffect(() => {
-    // Fetch initial events
-    supabase.from('beacon_events')
+    // Fetch initial events with correct two-parameter signature for Supabase v2
+    supabase.from<BeaconEvent, BeaconEvent>('beacon_events')
       .select('*')
       .then(({ data, error }) => {
-        if (data) setEvents(data as BeaconEvent[]);
+        if (data) setEvents(data);
       });
 
-    // Real-time subscription (Supabase v2 API)
-    const subscription = supabase
-      .channel('beacon_events_insert')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'beacon_events' },
-        (payload) => {
-          setEvents(prev => [...prev, payload.new as BeaconEvent]);
-        }
-      )
+    // Real-time subscription
+    const subscription = supabase.from<BeaconEvent, BeaconEvent>('beacon_events')
+      .on('INSERT', payload => {
+        setEvents(prev => [...prev, payload.new]);
+      })
       .subscribe();
 
     return () => {
-      supabase.removeChannel(subscription);
+      supabase.removeSubscription(subscription);
     };
   }, []);
 
