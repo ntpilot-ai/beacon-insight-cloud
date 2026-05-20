@@ -542,37 +542,8 @@ useEffect(() => {
 
         </section>
 
-        <section className="bg-white rounded-3xl p-6 shadow-sm">
-
-          <h2 className="text-3xl font-bold mb-6">
-            Students of Concern
-          </h2>
-
-          <div className="space-y-4">
-
-            {students.map(student => (
-
-              <div
-                key={student.name}
-                className="bg-slate-50 rounded-2xl p-5"
-              >
-
-                <div className="font-semibold text-lg">
-                  {student.name}
-                </div>
-
-                <div className="mt-2 text-[#013B93] font-semibold">
-                  Behaviour Score: {student.score}
-                </div>
-
-              </div>
-
-            ))}
-
-          </div>
-
-        </section>
-
+<StudentProfiles students={students} />
+       
       </div>
 
     </main>
