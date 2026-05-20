@@ -3,7 +3,7 @@ interface Props {
   alerts: number;
   blocked: number;
   wellbeing: string;
-  wellbeingDelta: number;
+  wellbeingDelta?: number;
 }
 
 function KPICard({
@@ -44,7 +44,7 @@ function KPICard({
   );
 }
 
-export default function KPIGrid({ totalPrompts, alerts, blocked, wellbeing, wellbeingDelta }: Props) {
+export default function KPIGrid({ totalPrompts, alerts, blocked, wellbeing, wellbeingDelta = 0 }: Props) {
   return (
     <div className="grid grid-cols-4 gap-4 mb-6">
       <KPICard
