@@ -10,7 +10,6 @@ import RiskBreakdown from "@/components/RiskBreakdown";
 import QuickActions from "@/components/QuickActions";
 import TrendLine from "@/components/TrendLine";
 import AISummary from "@/components/AISummary";
-import StudentProfiles from "@/components/StudentProfiles";
 
 interface BeaconEvent {
   id: number;
@@ -85,23 +84,6 @@ export default function Dashboard() {
   );
   const wellbeingDelta = 0.6;
 
-  // Students of concern
-  const studentMap = filteredEvents.reduce((acc, e) => {
-    if (!acc[e.student_id]) {
-      acc[e.student_id] = { name: e.student_id, prompts: 0, score: 0, status: "Monitored" };
-    }
-    acc[e.student_id].prompts += 1;
-    acc[e.student_id].score = Math.min(
-      acc[e.student_id].score + (e.risk === "high" ? 20 : e.risk === "medium" ? 10 : 2),
-      100
-    );
-    if (acc[e.student_id].score >= 75) acc[e.student_id].status = "Escalated";
-    else if (acc[e.student_id].score >= 40) acc[e.student_id].status = "Review";
-    return acc;
-  }, {} as Record<string, { name: string; prompts: number; score: number; status: string }>);
-
-  const students = Object.values(studentMap).sort((a, b) => b.score - a.score);
-
   return (
     <div className="flex min-h-screen bg-[#F0F2F8]">
       <Sidebar />
@@ -162,10 +144,6 @@ export default function Dashboard() {
               <RiskBreakdown events={filteredEvents} />
               <QuickActions />
             </div>
-          </div>
-
-          <div className="mb-6">
-            <StudentProfiles students={students} />
           </div>
 
           <AISummary events={filteredEvents} />
