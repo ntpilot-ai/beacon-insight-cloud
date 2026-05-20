@@ -16,7 +16,7 @@ import {
 } from "recharts";
 
 import { useEffect, useState } from "react";
-import { supabase, Database } from "@/lib/supabase";
+import { supabase } from "@/lib/supabase";
 
 const COLORS = [
   "#013B93",
@@ -26,28 +26,38 @@ const COLORS = [
   "#8B5CF6",
 ];
 
+type BeaconEvent = {
+  id?: number;
+  created_at: string;
+  student_id?: string;
+  school_id?: string;
+  platform: string;
+  prompt: string;
+  risk: string;
+  blocked: boolean;
+  matched: string[];
+  hostname: string;
+};
+
 export default function Page() {
-  const [events, setEvents] = useState<Database['public']['Tables']['beacon_events']['Row'][]>([]);
+  const [events, setEvents] = useState<BeaconEvent[]>([]);
 
   useEffect(() => {
     // Fetch initial events
     supabase
-      .from<Database['public']['Tables']['beacon_events']['Row'], 'public'>("beacon_events")
+      .from<BeaconEvent>("beacon_events")
       .select("*")
-      .then(({ data }) => {
+      .then(({ data, error }) => {
         if (data) setEvents(data);
+        if (error) console.error(error);
       });
 
-    // Subscribe to live events
+    // Subscribe to new inserts
     const subscription = supabase
-      .channel('table-db-changes')
-      .on<Database['public']['Tables']['beacon_events']['Row']>(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'beacon_events' },
-        (payload) => {
-          setEvents((prev) => [...prev, payload.new]);
-        }
-      )
+      .channel("public:beacon_events")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "beacon_events" }, (payload) => {
+        setEvents((prev) => [...prev, payload.new]);
+      })
       .subscribe();
 
     return () => {
@@ -56,12 +66,12 @@ export default function Page() {
   }, []);
 
   return (
-    <>
+    <div>
       <Header />
       <MonitoringBanner />
       <KPIGrid events={events} />
       <StudentProfiles events={events} />
-      {/* Charts and other components using events */}
-    </>
+      {/* Charts and other UI can remain as before */}
+    </div>
   );
 }
