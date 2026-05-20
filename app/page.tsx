@@ -12,7 +12,7 @@ import {
   PieChart,
   Pie,
   Cell,
-  Tooltip,
+  Tooltip
 } from "recharts";
 
 import { useEffect, useState } from "react";
@@ -23,10 +23,11 @@ const COLORS = [
   "#10B981",
   "#F59E0B",
   "#DC2626",
-  "#8B5CF6",
+  "#8B5CF6"
 ];
 
-interface BeaconEvent {
+// Define the row type and insert type for Supabase v2
+export interface BeaconEventRow {
   id: number;
   created_at: string;
   student_id: string;
@@ -39,38 +40,41 @@ interface BeaconEvent {
   hostname: string;
 }
 
-export default function Page() {
-  const [events, setEvents] = useState<BeaconEvent[]>([]);
+export type BeaconEventInsert = Omit<BeaconEventRow, 'id' | 'created_at'>;
+
+export default function InsightPage() {
+  const [events, setEvents] = useState<BeaconEventRow[]>([]);
 
   useEffect(() => {
     // Fetch initial events
     const fetchEvents = async () => {
-      const { data, error } = await supabase.from<BeaconEvent>('beacon_events').select('*');
+      const { data, error } = await supabase
+        .from<BeaconEventRow, BeaconEventInsert>('beacon_events')
+        .select('*');
       if (data) setEvents(data);
     };
-
     fetchEvents();
 
-    // Real-time subscription
+    // Subscribe to new events
     const subscription = supabase
-      .channel('public:beacon_events')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'beacon_events' }, (payload) => {
-        setEvents((prev) => [payload.new as BeaconEvent, ...prev]);
+      .from<BeaconEventRow, BeaconEventInsert>('beacon_events')
+      .on('INSERT', (payload) => {
+        setEvents((prev) => [...prev, payload.new]);
       })
       .subscribe();
 
     return () => {
-      supabase.removeChannel(subscription);
+      supabase.removeSubscription(subscription);
     };
   }, []);
 
   return (
-    <>
+    <div>
       <Header />
       <MonitoringBanner />
       <KPIGrid events={events} />
       <StudentProfiles students={events} />
-      {/* Charts can also be passed events */}
-    </>
+      {/* Charts and other components go here */}
+    </div>
   );
 }
