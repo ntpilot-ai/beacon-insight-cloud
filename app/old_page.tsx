@@ -4,7 +4,6 @@ import Header from "@/components/Header";
 import MonitoringBanner from "@/components/MonitoringBanner";
 import KPIGrid from "@/components/KPIGrid";
 import StudentProfiles from "@/components/StudentProfiles";
-import TrendLine from "@/components/TrendLine";
 
 import {
   ResponsiveContainer,
@@ -119,12 +118,7 @@ export default function Dashboard() {
         wellbeing={wellbeing}
       />
 
-      {/* Trend Line — between KPIs and charts */}
-      <div className="px-4 pb-5">
-        <TrendLine events={events} />
-      </div>
-
-      {/* Risk + Platform charts */}
+      {/* Charts */}
       <div className="px-4 grid grid-cols-2 gap-5">
 
         <section className="bg-white rounded-3xl p-6 shadow-sm h-[340px]">
