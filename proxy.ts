@@ -1,40 +1,24 @@
-import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import type { CookieOptions } from "@supabase/ssr";
 
 export async function proxy(request: NextRequest) {
-  const response = NextResponse.next();
+  const pathname = request.nextUrl.pathname;
 
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        get(name: string) {
-          return request.cookies.get(name)?.value;
-        },
-        set(name: string, value: string, options: CookieOptions) {
-          response.cookies.set(name, value, options);
-        },
-        remove(name: string, options: CookieOptions) {
-          response.cookies.delete({ name, ...options });
-        },
-      },
-    }
-  );
+  // Let login page through always
+  if (pathname.startsWith("/login")) {
+    return NextResponse.next();
+  }
 
-  const { data: { session } } = await supabase.auth.getSession();
+  // Check for Supabase auth token cookie
+  const token =
+    request.cookies.get("sb-access-token")?.value ||
+    request.cookies.get(`sb-${process.env.NEXT_PUBLIC_SUPABASE_URL?.split("//")[1]?.split(".")[0]}-auth-token`)?.value;
 
-  if (!session && !request.nextUrl.pathname.startsWith("/login")) {
+  if (!token) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  if (session && request.nextUrl.pathname.startsWith("/login")) {
-    return NextResponse.redirect(new URL("/", request.url));
-  }
-
-  return response;
+  return NextResponse.next();
 }
 
 export const config = {

@@ -24,7 +24,8 @@ export default function LoginPage() {
       setError(error.message);
       setLoading(false);
     } else {
-      router.push("/");
+      // Hard navigate so the session cookie is picked up by proxy.ts
+      window.location.href = "/";
     }
   }
 
@@ -51,7 +52,6 @@ export default function LoginPage() {
     <div className="min-h-screen bg-[#F0F2F8] flex items-center justify-center p-4">
       <div className="w-full max-w-md">
 
-        {/* Logo */}
         <div className="flex items-center gap-3 justify-center mb-8">
           <div className="w-12 h-12 rounded-2xl bg-[#013B93] flex items-center justify-center">
             <span className="text-white text-xl font-bold">B</span>
@@ -117,11 +117,7 @@ export default function LoginPage() {
                 disabled={loading}
                 className="w-full bg-[#013B93] text-white font-semibold py-2.5 rounded-xl hover:bg-[#012d70] disabled:opacity-40 transition-all text-sm"
               >
-                {loading
-                  ? "Signing in..."
-                  : mode === "login"
-                  ? "Sign in"
-                  : "Send magic link"}
+                {loading ? "Signing in..." : mode === "login" ? "Sign in" : "Send magic link"}
               </button>
 
               <button
@@ -129,9 +125,7 @@ export default function LoginPage() {
                 onClick={() => { setMode(mode === "login" ? "magic" : "login"); setError(""); }}
                 className="w-full text-xs text-slate-400 hover:text-[#013B93] transition-colors py-1"
               >
-                {mode === "login"
-                  ? "Sign in with magic link instead"
-                  : "Sign in with password instead"}
+                {mode === "login" ? "Sign in with magic link instead" : "Sign in with password instead"}
               </button>
             </form>
           )}
