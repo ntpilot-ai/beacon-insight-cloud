@@ -1,23 +1,16 @@
 "use client";
 
-import Header from "@/components/Header";
-import MonitoringBanner from "@/components/MonitoringBanner";
-import KPIGrid from "@/components/KPIGrid";
-import StudentProfiles from "@/components/StudentProfiles";
-import TrendLine from "@/components/TrendLine";
-
-import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  Cell,
-  PieChart,
-  Pie,
-  Tooltip
-} from "recharts";
-
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
+
+import Sidebar from "@/components/Sidebar";
+import KPIGrid from "@/components/KPIGrid";
+import EventsTable from "@/components/EventsTable";
+import RiskBreakdown from "@/components/RiskBreakdown";
+import QuickActions from "@/components/QuickActions";
+import TrendLine from "@/components/TrendLine";
+import AISummary from "@/components/AISummary";
+import StudentProfiles from "@/components/StudentProfiles";
 
 interface BeaconEvent {
   id: number;
@@ -32,23 +25,25 @@ interface BeaconEvent {
   hostname: string;
 }
 
-const COLORS = [
-  "#013B93",
-  "#10B981",
-  "#F59E0B",
-  "#DC2626",
-  "#8B5CF6"
+// UK school term date ranges
+const TERMS = [
+  { label: "Spring Term 2026", start: "2026-01-05", end: "2026-04-04" },
+  { label: "Autumn Term 2025", start: "2025-09-02", end: "2025-12-19" },
+  { label: "Summer Term 2025", start: "2025-04-22", end: "2025-07-18" },
+  { label: "All Time",         start: "2000-01-01", end: "2099-12-31" },
 ];
 
 export default function Dashboard() {
   const [events, setEvents] = useState<BeaconEvent[]>([]);
+  const [term, setTerm] = useState(TERMS[0].label);
+  const [live, setLive] = useState(true);
 
   async function loadEvents() {
     const { data } = await supabase
       .from("beacon_events")
       .select("*")
       .order("created_at", { ascending: false });
-    setEvents(data as BeaconEvent[] || []);
+    setEvents((data as BeaconEvent[]) || []);
   }
 
   useEffect(() => {
@@ -61,36 +56,36 @@ export default function Dashboard() {
         { event: "*", schema: "public", table: "beacon_events" },
         () => { loadEvents(); }
       )
-      .subscribe();
+      .subscribe((status) => {
+        setLive(status === "SUBSCRIBED");
+      });
 
     return () => { supabase.removeChannel(channel); };
   }, []);
 
-  // KPI values
-  const totalPrompts = events.length;
-  const alerts = events.filter(e => e.risk !== "low").length;
-  const blocked = events.filter(e => e.blocked).length;
-  const wellbeing = Math.max(
-    1,
-    (10 - ((alerts / Math.max(totalPrompts, 1)) * 10))
-  ).toFixed(1);
+  // Filter events by selected term
+  const filteredEvents = useMemo(() => {
+    const selected = TERMS.find(t => t.label === term) ?? TERMS[0];
+    const start = new Date(selected.start);
+    const end = new Date(selected.end);
+    end.setHours(23, 59, 59);
+    return events.filter(e => {
+      const d = new Date(e.created_at);
+      return d >= start && d <= end;
+    });
+  }, [events, term]);
 
-  // Chart data
-  const riskData = [
-    { name: "LOW",  value: events.filter(e => e.risk === "low").length },
-    { name: "MED",  value: events.filter(e => e.risk === "medium").length },
-    { name: "HIGH", value: events.filter(e => e.risk === "high").length },
-  ];
-
-  const platformMap: Record<string, number> = {};
-  events.forEach(e => {
-    const key = e.platform || "unknown";
-    platformMap[key] = (platformMap[key] || 0) + 1;
-  });
-  const platformData = Object.entries(platformMap).map(([name, value]) => ({ name, value }));
+  // KPIs
+  const totalPrompts = filteredEvents.length;
+  const alerts = filteredEvents.filter(e => e.risk !== "low").length;
+  const blocked = filteredEvents.filter(e => e.blocked).length;
+  const wellbeing = parseFloat(
+    Math.max(1, 10 - (alerts / Math.max(totalPrompts, 1)) * 10).toFixed(1)
+  );
+  const wellbeingDelta = 0.6;
 
   // Students of concern
-  const studentMap = events.reduce((acc, e) => {
+  const studentMap = filteredEvents.reduce((acc, e) => {
     if (!acc[e.student_id]) {
       acc[e.student_id] = { name: e.student_id, prompts: 0, score: 0, status: "Monitored" };
     }
@@ -107,98 +102,75 @@ export default function Dashboard() {
   const students = Object.values(studentMap).sort((a, b) => b.score - a.score);
 
   return (
-    <main className="min-h-screen bg-[#F3F4F6]">
+    <div className="flex min-h-screen bg-[#F0F2F8]">
+      <Sidebar />
 
-      <Header loadEvents={loadEvents} />
-      <MonitoringBanner />
+      <div className="flex-1 flex flex-col min-w-0">
 
-      <KPIGrid
-        totalPrompts={totalPrompts}
-        alerts={alerts}
-        blocked={blocked}
-        wellbeing={wellbeing}
-      />
+        {/* Top bar */}
+        <header className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between shrink-0">
+          <div>
+            <h1 className="text-2xl font-bold text-[#013B93]">Beacon Reporting Dashboard</h1>
+            <p className="text-sm text-slate-400 mt-0.5">Teacher safeguarding, wellbeing and engagement overview</p>
+          </div>
 
-      {/* Trend Line — between KPIs and charts */}
-      <div className="px-4 pb-5">
-        <TrendLine events={events} />
-      </div>
-
-      {/* Risk + Platform charts */}
-      <div className="px-4 grid grid-cols-2 gap-5">
-
-        <section className="bg-white rounded-3xl p-6 shadow-sm h-[340px]">
-          <h2 className="text-3xl font-bold mb-6">Risk Trend</h2>
-          <ResponsiveContainer width="100%" height="85%">
-            <BarChart data={riskData}>
-              <Tooltip />
-              <Bar dataKey="value" radius={[10, 10, 0, 0]}>
-                <Cell fill="#10B981" />
-                <Cell fill="#F59E0B" />
-                <Cell fill="#DC2626" />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </section>
-
-        <section className="bg-white rounded-3xl p-6 shadow-sm h-[340px]">
-          <h2 className="text-3xl font-bold mb-6">Platform Usage</h2>
-          <div className="flex items-center justify-between h-[240px]">
-            <div className="w-[55%] h-full">
-              <ResponsiveContainer>
-                <PieChart>
-                  <Pie data={platformData} dataKey="value" outerRadius={90} label>
-                    {platformData.map((_, index) => (
-                      <Cell key={index} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="space-y-3 text-lg">
-              {platformData.map((p) => (
-                <div key={p.name}>{p.name}: {p.value}</div>
+          <div className="flex items-center gap-3">
+            <select
+              value={term}
+              onChange={e => setTerm(e.target.value)}
+              className="text-sm border border-slate-200 rounded-xl px-4 py-2 text-slate-600 bg-white focus:outline-none focus:ring-2 focus:ring-[#013B93]/20 cursor-pointer"
+            >
+              {TERMS.map(t => (
+                <option key={t.label} value={t.label}>{t.label}</option>
               ))}
+            </select>
+
+            <button
+              onClick={loadEvents}
+              title="Refresh data"
+              className="w-9 h-9 rounded-xl border border-slate-200 flex items-center justify-center text-slate-400 hover:text-[#013B93] hover:border-[#013B93] transition-all"
+            >
+              ↺
+            </button>
+
+            <div className={`flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-full ${live ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-400"}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${live ? "bg-emerald-500 animate-pulse" : "bg-slate-300"}`} />
+              {live ? "LIVE" : "Offline"}
             </div>
           </div>
-        </section>
+        </header>
 
-      </div>
+        {/* Main content */}
+        <main className="flex-1 p-6 overflow-auto">
 
-      {/* Events feed + Students */}
-      <div className="p-4 grid grid-cols-[2fr_1fr] gap-5">
+          <KPIGrid
+            totalPrompts={totalPrompts}
+            alerts={alerts}
+            blocked={blocked}
+            wellbeing={wellbeing.toFixed(1)}
+            wellbeingDelta={wellbeingDelta}
+          />
 
-        <section className="bg-white rounded-3xl p-6 shadow-sm">
-          <h2 className="text-3xl font-bold mb-6">Recent Safeguarding Events</h2>
-          <div className="space-y-4 max-h-[700px] overflow-auto">
-            {events.slice(0, 10).map((event) => (
-              <div
-                key={event.id}
-                className={`
-                  border-l-[6px] rounded-2xl p-5 bg-slate-50
-                  ${event.risk === "high" ? "border-red-500"
-                    : event.risk === "medium" ? "border-amber-500"
-                    : "border-emerald-500"}
-                `}
-              >
-                <div className="font-bold uppercase mb-2">{event.risk}</div>
-                <div className="text-lg mb-4">{event.prompt}</div>
-                <div className="text-sm text-slate-500">
-                  Matched: {event.matched?.join(", ")}
-                </div>
-                <div className="text-sm text-slate-400 mt-2">
-                  {new Date(event.created_at).toLocaleString()}
-                </div>
-              </div>
-            ))}
+          <div className="mb-6">
+            <TrendLine events={filteredEvents} />
           </div>
-        </section>
 
-        <StudentProfiles students={students} />
+          <div className="grid grid-cols-[1fr_340px] gap-5 mb-6">
+            <EventsTable events={filteredEvents} />
+            <div className="flex flex-col gap-5">
+              <RiskBreakdown events={filteredEvents} />
+              <QuickActions />
+            </div>
+          </div>
 
+          <div className="mb-6">
+            <StudentProfiles students={students} />
+          </div>
+
+          <AISummary events={filteredEvents} />
+
+        </main>
       </div>
-
-    </main>
+    </div>
   );
 }

@@ -1,120 +1,90 @@
-function Card({
-  title,
-  value,
-  colour,
-  delta,
-  live
-}:any) {
-
-  return (
-
-    <div className="
-      bg-white
-      rounded-3xl
-      p-6
-      shadow-sm
-      h-[150px]
-      flex
-      flex-col
-      justify-between
-      transition-all
-      hover:shadow-lg
-    ">
-
-      <div className="flex items-center justify-between">
-
-        <div className="text-slate-500 text-lg">
-          {title}
-        </div>
-
-        {live && (
-
-          <div className="
-            flex
-            items-center
-            gap-2
-            text-emerald-500
-            text-sm
-            font-semibold
-          ">
-
-            <div className="
-              w-2
-              h-2
-              rounded-full
-              bg-emerald-500
-              animate-pulse
-            " />
-
-            LIVE
-
-          </div>
-
-        )}
-
-      </div>
-
-      <div
-        className="text-6xl font-bold"
-        style={{ color: colour }}
-      >
-        {value}
-      </div>
-
-      <div className="text-sm text-slate-400">
-        {delta}
-      </div>
-
-    </div>
-
-  );
-
+interface Props {
+  totalPrompts: number;
+  alerts: number;
+  blocked: number;
+  wellbeing: string;
+  wellbeingDelta: number;
 }
 
-export default function KPIGrid({
-  totalPrompts,
-  alerts,
-  blocked,
-  wellbeing
-}:any) {
-
+function KPICard({
+  icon,
+  label,
+  value,
+  delta,
+  deltaLabel,
+  accent,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: React.ReactNode;
+  delta?: React.ReactNode;
+  deltaLabel?: string;
+  accent: string;
+}) {
   return (
-
-    <div className="p-4 grid grid-cols-4 gap-5">
-
-      <Card
-        title="Prompts Detected"
-        value={totalPrompts}
-        colour="#013B93"
-        delta="+12% today"
-        live
-      />
-
-      <Card
-        title="Alerts"
-        value={alerts}
-        colour="#F59E0B"
-        delta="+4 high risk"
-        live
-      />
-
-      <Card
-        title="Blocked"
-        value={blocked}
-        colour="#DC2626"
-        delta="Realtime protection"
-        live
-      />
-
-      <Card
-        title="Wellbeing"
-        value={wellbeing}
-        colour="#10B981"
-        delta="Behaviour stable"
-      />
-
+    <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 flex flex-col gap-3">
+      <div className="flex items-center gap-3">
+        <div
+          className="w-10 h-10 rounded-xl flex items-center justify-center text-xl shrink-0"
+          style={{ background: `${accent}18`, color: accent }}
+        >
+          {icon}
+        </div>
+        <span className="text-sm text-slate-500 font-medium">{label}</span>
+      </div>
+      <div className="text-4xl font-bold text-[#013B93]" style={{ color: accent }}>
+        {value}
+      </div>
+      {delta !== undefined && (
+        <div className="text-xs text-slate-400">
+          {delta} <span className="ml-1">{deltaLabel}</span>
+        </div>
+      )}
     </div>
-
   );
+}
 
+export default function KPIGrid({ totalPrompts, alerts, blocked, wellbeing, wellbeingDelta }: Props) {
+  return (
+    <div className="grid grid-cols-4 gap-4 mb-6">
+      <KPICard
+        icon="👥"
+        label="Students Monitored"
+        value={totalPrompts}
+        delta={<span className="text-emerald-500 font-semibold">↑ 12 this week</span>}
+        accent="#013B93"
+      />
+      <KPICard
+        icon="🔔"
+        label="Open Alerts"
+        value={<span className="text-amber-500">{alerts}</span>}
+        delta={null}
+        deltaLabel="5 require review today"
+        accent="#F59E0B"
+      />
+      <KPICard
+        icon="🚩"
+        label="Critical Incidents"
+        value={<span className="text-red-500">{blocked}</span>}
+        deltaLabel="Escalated to safeguarding lead"
+        accent="#DC2626"
+      />
+      <KPICard
+        icon="💚"
+        label="Average Wellbeing Score"
+        value={
+          <span className="text-emerald-500">
+            {wellbeing}
+            <span className="text-2xl text-slate-400 font-normal"> /10</span>
+          </span>
+        }
+        delta={
+          wellbeingDelta >= 0
+            ? <span className="text-emerald-500 font-semibold">↑ Improved +{wellbeingDelta.toFixed(1)}</span>
+            : <span className="text-red-500 font-semibold">↓ {wellbeingDelta.toFixed(1)}</span>
+        }
+        accent="#10B981"
+      />
+    </div>
+  );
 }
