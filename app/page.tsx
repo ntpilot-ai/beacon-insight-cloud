@@ -1,3 +1,5 @@
+// Updated page.tsx with correct Supabase usage and real-time subscription
+
 "use client";
 
 import Header from "@/components/Header";
@@ -12,66 +14,53 @@ import {
   PieChart,
   Pie,
   Cell,
-  Tooltip,
+  Tooltip
 } from "recharts";
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
-const COLORS = [
-  "#013B93",
-  "#10B981",
-  "#F59E0B",
-  "#DC2626",
-  "#8B5CF6",
-];
-
-type BeaconEvent = {
-  id?: number;
+interface BeaconEvent {
+  id: number;
   created_at: string;
-  student_id?: string;
-  school_id?: string;
+  student_id: string;
+  school_id: string;
   platform: string;
   prompt: string;
   risk: string;
   blocked: boolean;
   matched: string[];
   hostname: string;
-};
+}
 
 export default function Page() {
   const [events, setEvents] = useState<BeaconEvent[]>([]);
 
   useEffect(() => {
-    // Fetch initial events
-    supabase
-      .from<BeaconEvent>("beacon_events")
-      .select("*")
-      .then(({ data, error }) => {
-        if (data) setEvents(data);
-        if (error) console.error(error);
-      });
+    // Fetch initial events with correct two-parameter signature
+    supabase.from<BeaconEvent>('beacon_events').select('*').then(({ data, error }) => {
+      if (data) setEvents(data);
+    });
 
-    // Subscribe to new inserts
-    const subscription = supabase
-      .channel("public:beacon_events")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "beacon_events" }, (payload) => {
-        setEvents((prev) => [...prev, payload.new]);
+    // Subscribe to new events in real-time
+    const subscription = supabase.from<BeaconEvent>('beacon_events')
+      .on('INSERT', payload => {
+        setEvents(prev => [...prev, payload.new]);
       })
       .subscribe();
 
     return () => {
-      supabase.removeChannel(subscription);
+      supabase.removeSubscription(subscription);
     };
   }, []);
 
   return (
-    <div>
+    <>
       <Header />
       <MonitoringBanner />
       <KPIGrid events={events} />
       <StudentProfiles events={events} />
-      {/* Charts and other UI can remain as before */}
-    </div>
+      {/* Charts and other UI can go here */}
+    </>
   );
 }
