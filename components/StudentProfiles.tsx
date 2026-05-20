@@ -1,5 +1,5 @@
 export default function StudentProfiles({
-  students
+  students = []
 }:any) {
 
   return (
