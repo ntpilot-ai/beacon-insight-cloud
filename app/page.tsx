@@ -1,8 +1,3 @@
-# Beacon Insight Cloud — Next.js UI Migration
-
-Replace your current `app/page.tsx` with the following:
-
-```tsx
 "use client";
 
 import {
