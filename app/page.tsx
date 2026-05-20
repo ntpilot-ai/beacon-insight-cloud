@@ -12,62 +12,56 @@ import {
   PieChart,
   Pie,
   Cell,
-  Tooltip
+  Tooltip,
 } from "recharts";
 
 import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
+import { supabase, Database } from "@/lib/supabase";
 
 const COLORS = [
   "#013B93",
   "#10B981",
   "#F59E0B",
   "#DC2626",
-  "#8B5CF6"
+  "#8B5CF6",
 ];
 
-interface EventData {
-  id: number;
-  created_at: string;
-  student_id: string;
-  school_id: string;
-  platform: string;
-  prompt: string;
-  risk: string;
-  blocked: boolean;
-  matched: string[];
-  hostname: string;
-}
-
 export default function Page() {
-  const [events, setEvents] = useState<EventData[]>([]);
+  const [events, setEvents] = useState<Database['public']['Tables']['beacon_events']['Row'][]>([]);
 
   useEffect(() => {
     // Fetch initial events
-    supabase.from<EventData>('beacon_events').select('*').then(({ data }) => {
-      if (data) setEvents(data);
-    });
+    supabase
+      .from<Database['public']['Tables']['beacon_events']['Row'], 'public'>("beacon_events")
+      .select("*")
+      .then(({ data }) => {
+        if (data) setEvents(data);
+      });
 
-    // Subscribe to new events
+    // Subscribe to live events
     const subscription = supabase
-      .from<EventData, EventData>('beacon_events')
-      .on('INSERT', (payload) => {
-        setEvents((prev) => [...prev, payload.new]);
-      })
+      .channel('table-db-changes')
+      .on<Database['public']['Tables']['beacon_events']['Row']>(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'beacon_events' },
+        (payload) => {
+          setEvents((prev) => [...prev, payload.new]);
+        }
+      )
       .subscribe();
 
     return () => {
-      supabase.removeSubscription(subscription);
+      supabase.removeChannel(subscription);
     };
   }, []);
 
   return (
-    <div>
+    <>
       <Header />
       <MonitoringBanner />
       <KPIGrid events={events} />
       <StudentProfiles events={events} />
-      {/* Charts, tables, and other UI components using events */}
-    </div>
+      {/* Charts and other components using events */}
+    </>
   );
 }
