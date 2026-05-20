@@ -1,3 +1,8 @@
+import Header from "@/components/Header";
+import MonitoringBanner from "@/components/MonitoringBanner";
+import KPIGrid from "@/components/KPIGrid";
+import StudentProfiles from "@/components/StudentProfiles";
+
 "use client";
 
 import {
