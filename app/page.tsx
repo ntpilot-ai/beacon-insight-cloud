@@ -1,5 +1,3 @@
-// Updated page.tsx with correct Supabase usage and real-time subscription
-
 "use client";
 
 import Header from "@/components/Header";
@@ -33,17 +31,27 @@ interface BeaconEvent {
   hostname: string;
 }
 
-export default function Page() {
+const COLORS = [
+  "#013B93",
+  "#10B981",
+  "#F59E0B",
+  "#DC2626",
+  "#8B5CF6"
+];
+
+export default function Dashboard() {
   const [events, setEvents] = useState<BeaconEvent[]>([]);
 
   useEffect(() => {
-    // Fetch initial events with correct two-parameter signature
-    supabase.from<BeaconEvent>('beacon_events').select('*').then(({ data, error }) => {
-      if (data) setEvents(data);
-    });
+    // Fetch initial events with correct two-parameter signature for Supabase v2
+    supabase.from<BeaconEvent, BeaconEvent>('beacon_events')
+      .select('*')
+      .then(({ data, error }) => {
+        if (data) setEvents(data);
+      });
 
-    // Subscribe to new events in real-time
-    const subscription = supabase.from<BeaconEvent>('beacon_events')
+    // Real-time subscription
+    const subscription = supabase.from<BeaconEvent, BeaconEvent>('beacon_events')
       .on('INSERT', payload => {
         setEvents(prev => [...prev, payload.new]);
       })
@@ -55,12 +63,11 @@ export default function Page() {
   }, []);
 
   return (
-    <>
+    <div>
       <Header />
       <MonitoringBanner />
       <KPIGrid events={events} />
       <StudentProfiles events={events} />
-      {/* Charts and other UI can go here */}
-    </>
+    </div>
   );
 }
