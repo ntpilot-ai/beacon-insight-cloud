@@ -12,11 +12,19 @@ import {
   PieChart,
   Pie,
   Cell,
-  Tooltip
+  Tooltip,
 } from "recharts";
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
+
+const COLORS = [
+  "#013B93",
+  "#10B981",
+  "#F59E0B",
+  "#DC2626",
+  "#8B5CF6",
+];
 
 interface BeaconEvent {
   id: number;
@@ -31,35 +39,24 @@ interface BeaconEvent {
   hostname: string;
 }
 
-const COLORS = [
-  "#013B93",
-  "#10B981",
-  "#F59E0B",
-  "#DC2626",
-  "#8B5CF6"
-];
-
-export default function Dashboard() {
+export default function Page() {
   const [events, setEvents] = useState<BeaconEvent[]>([]);
 
   useEffect(() => {
     // Fetch initial events
-    supabase.from('beacon_events')
-      .select('*')
-      .then(({ data, error }) => {
-        if (data) setEvents(data as BeaconEvent[]);
-      });
+    const fetchEvents = async () => {
+      const { data, error } = await supabase.from<BeaconEvent>('beacon_events').select('*');
+      if (data) setEvents(data);
+    };
 
-    // Real-time subscription (Supabase v2 API)
+    fetchEvents();
+
+    // Real-time subscription
     const subscription = supabase
-      .channel('beacon_events_insert')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'beacon_events' },
-        (payload) => {
-          setEvents(prev => [...prev, payload.new as BeaconEvent]);
-        }
-      )
+      .channel('public:beacon_events')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'beacon_events' }, (payload) => {
+        setEvents((prev) => [payload.new as BeaconEvent, ...prev]);
+      })
       .subscribe();
 
     return () => {
@@ -68,11 +65,12 @@ export default function Dashboard() {
   }, []);
 
   return (
-    <div>
+    <>
       <Header />
       <MonitoringBanner />
       <KPIGrid events={events} />
-      <StudentProfiles events={events} />
-    </div>
+      <StudentProfiles students={events} />
+      {/* Charts can also be passed events */}
+    </>
   );
 }
