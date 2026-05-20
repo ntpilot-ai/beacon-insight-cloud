@@ -166,7 +166,7 @@ useEffect(() => {
         <div>
 
           <h1 className="text-5xl font-bold">
-            Beacon Insight v2
+            Beacon Insight
           </h1>
 
           <p className="mt-2 text-sm opacity-90">
@@ -175,43 +175,12 @@ useEffect(() => {
 
         </div>
 
-        <div className="flex items-center gap-4">
-
-          <div className="
-            flex
-            items-center
-            gap-2
-            bg-white/10
-            px-4
-            py-2
-            rounded-full
-          ">
-
-            <div className="
-              w-3
-              h-3
-              rounded-full
-              bg-emerald-400
-              animate-pulse
-            " />
-
-            <span className="
-              text-sm
-              font-semibold
-            ">
-              LIVE • Connected
-            </span>
-
-          </div>
-
-          <button
-            onClick={loadEvents}
-            className="font-semibold"
-          >
-            Refresh
-          </button>
-
-        </div>
+        <button
+          onClick={loadEvents}
+          className="font-semibold"
+        >
+          Refresh
+        </button>
 
       </header>
 
@@ -221,31 +190,24 @@ useEffect(() => {
           title="Prompts Detected"
           value={totalPrompts}
           colour="#013B93"
-          delta="+12% today"
-          live
         />
 
         <Card
           title="Alerts"
           value={alerts}
           colour="#F59E0B"
-          delta="+4 high risk"
-          live
         />
 
         <Card
           title="Blocked"
           value={blocked}
           colour="#DC2626"
-          delta="Realtime protection"
-          live
         />
 
         <Card
           title="Wellbeing"
           value={wellbeing}
           colour="#10B981"
-          delta="Behaviour stable"
         />
 
       </div>
@@ -379,42 +341,6 @@ useEffect(() => {
                   {event.risk}
                 </div>
 
-                <div className="
-                  flex
-                  items-center
-                  gap-2
-                  mb-3
-                ">
-
-                  <div className="
-                    px-3
-                    py-1
-                    rounded-full
-                    bg-slate-200
-                    text-xs
-                    font-semibold
-                  ">
-                    {event.platform}
-                  </div>
-
-                  {event.blocked && (
-
-                    <div className="
-                      px-3
-                      py-1
-                      rounded-full
-                      bg-red-100
-                      text-red-600
-                      text-xs
-                      font-bold
-                    ">
-                      BLOCKED
-                    </div>
-
-                  )}
-
-                </div>
-
                 <div className="text-lg mb-4">
                   {event.prompt}
                 </div>
@@ -484,64 +410,15 @@ useEffect(() => {
 function Card({
   title,
   value,
-  colour,
-  delta,
-  live
+  colour
 }:any) {
 
   return (
 
-    <div className="
-      bg-white
-      rounded-3xl
-      p-6
-      shadow-sm
-      h-[150px]
-      flex
-      flex-col
-      justify-between
-      transition-all
-      hover:shadow-lg
-    ">
+    <div className="bg-white rounded-3xl p-6 shadow-sm h-[140px] flex flex-col justify-center">
 
-      <div className="
-        flex
-        items-center
-        justify-between
-      ">
-
-        <div className="
-          text-slate-500
-          text-lg
-        ">
-          {title}
-        </div>
-
-        {live && (
-
-          <div className="
-            flex
-            items-center
-            gap-2
-            text-emerald-500
-            text-sm
-            font-semibold
-          ">
-
-            <div className="
-              w-2
-              h-2
-              rounded-full
-              bg-emerald-500
-              animate-pulse
-            " />
-
-            LIVE
-
-          </div>
-
-        )}
-
+      <div className="text-slate-500 text-lg mb-2">
+        {title}
       </div>
 
       <div
@@ -549,13 +426,6 @@ function Card({
         style={{ color:colour }}
       >
         {value}
-      </div>
-
-      <div className="
-        text-sm
-        text-slate-400
-      ">
-        {delta}
       </div>
 
     </div>
