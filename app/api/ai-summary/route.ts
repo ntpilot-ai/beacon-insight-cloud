@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { SCHOOL_NAME } from "@/lib/config";
 
 export async function POST(req: NextRequest) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -25,7 +26,7 @@ export async function POST(req: NextRequest) {
   const medium    = events.filter((e: any) => e.risk === "medium").length;
   const platforms = [...new Set(events.map((e: any) => e.platform))].join(", ");
 
-  const prompt = `You are a school safeguarding AI assistant. Analyse this data from Beacon, a real-time AI monitoring platform for schools.
+  const prompt = `You are a school safeguarding AI assistant for ${SCHOOL_NAME}. Analyse this data from Beacon, a real-time AI monitoring platform for schools.
 
 Summary stats:
 - Total events: ${events.length}
@@ -50,7 +51,7 @@ Respond ONLY with a JSON object in this exact format, no markdown, no preamble:
       "anthropic-version":    "2023-06-01",
     },
     body: JSON.stringify({
-      model:      "claude-haiku-4-5-20251001",
+      model:      "claude-sonnet-4-5",
       max_tokens: 1000,
       messages:   [{ role: "user", content: prompt }],
     }),

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import Sidebar from "@/components/Sidebar";
+import { SCHOOL_ID, SCHOOL_NAME } from "@/lib/config";
 
 interface Policy {
   id: string;
@@ -27,8 +28,6 @@ const SEVERITY_CONFIG = {
     badge:      "bg-amber-100 text-amber-700",
   },
 };
-
-const SCHOOL_ID = "default"; // extend later for multi-school
 
 export default function AtlasPage() {
   const [policies, setPolicies] = useState<Policy[]>([]);
@@ -91,7 +90,7 @@ export default function AtlasPage() {
           <div>
             <h1 className="text-2xl font-bold text-[#013B93]">Beacon Atlas</h1>
             <p className="text-sm text-slate-400 mt-0.5">
-              Runtime safeguarding keyword policies — synced to all monitored devices
+              {SCHOOL_NAME} — keyword policies synced to all monitored devices
             </p>
           </div>
           <div className="flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-600">
