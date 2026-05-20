@@ -469,7 +469,7 @@ useEffect(() => {
 
           <div className="space-y-4">
 
-            {students.map(student => (
+            {students.map((student:any) => (
 
               <div
                 key={student.name}
