@@ -18,16 +18,7 @@ import {
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
-const COLORS = [
-  "#013B93",
-  "#10B981",
-  "#F59E0B",
-  "#DC2626",
-  "#8B5CF6"
-];
-
-// Define the row type and insert type for Supabase v2
-export interface BeaconEventRow {
+interface BeaconEvent {
   id: number;
   created_at: string;
   student_id: string;
@@ -40,31 +31,39 @@ export interface BeaconEventRow {
   hostname: string;
 }
 
-export type BeaconEventInsert = Omit<BeaconEventRow, 'id' | 'created_at'>;
+const COLORS = [
+  "#013B93",
+  "#10B981",
+  "#F59E0B",
+  "#DC2626",
+  "#8B5CF6"
+];
 
-export default function InsightPage() {
-  const [events, setEvents] = useState<BeaconEventRow[]>([]);
+export default function Dashboard() {
+  const [events, setEvents] = useState<BeaconEvent[]>([]);
 
   useEffect(() => {
     // Fetch initial events
-    const fetchEvents = async () => {
-      const { data, error } = await supabase
-        .from<BeaconEventRow, BeaconEventInsert>('beacon_events')
-        .select('*');
-      if (data) setEvents(data);
-    };
-    fetchEvents();
+    supabase.from('beacon_events')
+      .select('*')
+      .then(({ data, error }) => {
+        if (data) setEvents(data as BeaconEvent[]);
+      });
 
-    // Subscribe to new events
+    // Real-time subscription (Supabase v2 API)
     const subscription = supabase
-      .from<BeaconEventRow, BeaconEventInsert>('beacon_events')
-      .on('INSERT', (payload) => {
-        setEvents((prev) => [...prev, payload.new]);
-      })
+      .channel('beacon_events_insert')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'beacon_events' },
+        (payload) => {
+          setEvents(prev => [...prev, payload.new as BeaconEvent]);
+        }
+      )
       .subscribe();
 
     return () => {
-      supabase.removeSubscription(subscription);
+      supabase.removeChannel(subscription);
     };
   }, []);
 
@@ -73,8 +72,7 @@ export default function InsightPage() {
       <Header />
       <MonitoringBanner />
       <KPIGrid events={events} />
-      <StudentProfiles students={events} />
-      {/* Charts and other components go here */}
+      <StudentProfiles events={events} />
     </div>
   );
 }
