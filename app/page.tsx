@@ -2,6 +2,8 @@
 
 import { useEffect, useState, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
+import { SCHOOL_ID, SCHOOL_NAME } from "@/lib/config";
+import { useAuth } from "@/lib/useAuth";
 
 import Sidebar from "@/components/Sidebar";
 import KPIGrid from "@/components/KPIGrid";
@@ -34,6 +36,7 @@ const TERMS = [
 ];
 
 export default function Dashboard() {
+  const { loading: authLoading, authenticated } = useAuth();
   const [events, setEvents] = useState<BeaconEvent[]>([]);
   const [term, setTerm] = useState(TERMS[3].label);
   const [live, setLive] = useState(true);
@@ -42,6 +45,7 @@ export default function Dashboard() {
     const { data } = await supabase
       .from("beacon_events")
       .select("*")
+      .eq("school_id", SCHOOL_ID)
       .order("created_at", { ascending: false });
     setEvents((data as BeaconEvent[]) || []);
   }
@@ -84,6 +88,9 @@ export default function Dashboard() {
   );
   const wellbeingDelta = 0.6;
 
+  if (authLoading) return <div className="min-h-screen bg-[#F0F2F8] flex items-center justify-center"><div className="text-slate-400 text-sm">Loading...</div></div>;
+  if (!authenticated) return null;
+
   return (
     <div className="flex min-h-screen bg-[#F0F2F8]">
       <Sidebar />
@@ -93,7 +100,7 @@ export default function Dashboard() {
         {/* Top bar */}
         <header className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between shrink-0">
           <div>
-            <h1 className="text-2xl font-bold text-[#013B93]">Beacon Reporting Dashboard</h1>
+            <h1 className="text-2xl font-bold text-[#013B93]">{SCHOOL_NAME} — Reporting Dashboard</h1>
             <p className="text-sm text-slate-400 mt-0.5">Teacher safeguarding, wellbeing and engagement overview</p>
           </div>
 

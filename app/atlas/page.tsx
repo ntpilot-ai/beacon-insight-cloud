@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import Sidebar from "@/components/Sidebar";
 import { SCHOOL_ID, SCHOOL_NAME } from "@/lib/config";
+import { useAuth } from "@/lib/useAuth";
 
 interface Policy {
   id: string;
@@ -30,6 +31,7 @@ const SEVERITY_CONFIG = {
 };
 
 export default function AtlasPage() {
+  const { loading: authLoading, authenticated } = useAuth();
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [loading, setLoading]   = useState(true);
   const [word, setWord]         = useState("");
@@ -78,6 +80,9 @@ export default function AtlasPage() {
 
   const high   = policies.filter(p => p.severity === "high");
   const medium = policies.filter(p => p.severity === "medium");
+
+  if (authLoading) return <div className="min-h-screen bg-[#F0F2F8] flex items-center justify-center"><div className="text-slate-400 text-sm">Loading...</div></div>;
+  if (!authenticated) return null;
 
   return (
     <div className="flex min-h-screen bg-[#F0F2F8]">
