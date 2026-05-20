@@ -26,11 +26,40 @@ export default function Home() {
   const [events, setEvents] =
     useState<any[]>([]);
 
-  useEffect(() => {
+useEffect(() => {
 
-    loadEvents();
+  loadEvents();
 
-  }, []);
+  const channel =
+    supabase
+      .channel("beacon-live")
+
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "beacon_events"
+        },
+
+        () => {
+
+          loadEvents();
+
+        }
+      )
+
+      .subscribe();
+
+  return () => {
+
+    supabase.removeChannel(
+      channel
+    );
+
+  };
+
+}, []);
 
   async function loadEvents() {
 
