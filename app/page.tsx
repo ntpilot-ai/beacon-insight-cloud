@@ -404,20 +404,3 @@ function Card({
   );
 
 }
-```
-
-Then:
-
-```bash
-npm run dev
-```
-
-OR:
-
-```bash
-git add .
-git commit -m "Port Beacon extension Insight UI to cloud"
-git push
-```
-
-Vercel will automatically redeploy the updated cloud
