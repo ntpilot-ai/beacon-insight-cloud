@@ -27,6 +27,7 @@ interface BeaconEvent {
 
 // UK school term date ranges
 const TERMS = [
+  { label: "Summer Term 2026", start: "2026-04-14", end: "2026-07-18" },
   { label: "Spring Term 2026", start: "2026-01-05", end: "2026-04-04" },
   { label: "Autumn Term 2025", start: "2025-09-02", end: "2025-12-19" },
   { label: "Summer Term 2025", start: "2025-04-22", end: "2025-07-18" },
@@ -35,7 +36,7 @@ const TERMS = [
 
 export default function Dashboard() {
   const [events, setEvents] = useState<BeaconEvent[]>([]);
-  const [term, setTerm] = useState(TERMS[0].label);
+  const [term, setTerm] = useState(TERMS[3].label);
   const [live, setLive] = useState(true);
 
   async function loadEvents() {
