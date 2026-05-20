@@ -142,39 +142,70 @@ useEffect(() => {
         value
       }));
 
-  const students = [
-    {
-      name:"Student-858",
-      score:45
-    },
-    {
-      name:"Student-481",
-      score:45
-    },
-    {
-      name:"Student-450",
-      score:40
+  const studentMap:any = {};
+
+  events.forEach(event => {
+
+    const student =
+      event.student_id ||
+      "Unknown";
+
+    if (!studentMap[student]) {
+
+      studentMap[student] = {
+        name: student,
+        prompts: 0,
+        high: 0,
+        blocked: 0,
+        score: 0,
+        status: "Monitor"
+      };
+
     }
-  ];
+
+    studentMap[student].prompts += 1;
+
+    if (event.risk === "medium") {
+      studentMap[student].score += 10;
+    }
+
+    if (event.risk === "high") {
+      studentMap[student].score += 25;
+      studentMap[student].high += 1;
+    }
+
+    if (event.blocked) {
+      studentMap[student].blocked += 1;
+    }
+
+    if (studentMap[student].score >= 75) {
+      studentMap[student].status = "Escalated";
+    }
+    else if (studentMap[student].score >= 40) {
+      studentMap[student].status = "Review";
+    }
+
+  });
+
+
+  const students =
+    Object.values(studentMap)
+      .sort((a:any,b:any) =>
+        b.score - a.score
+      );
+
+
 
   return (
 
     <main className="min-h-screen bg-[#F3F4F6]">
 
-      <header className="
-        bg-[#013B93]
-        text-white
-        px-8
-        py-6
-        flex
-        items-center
-        justify-between
-      ">
+      <header className="bg-[#013B93] text-white px-8 py-6 flex items-center justify-between">
 
         <div>
 
           <h1 className="text-5xl font-bold">
-            Beacon Insight v2
+            Beacon Insight
           </h1>
 
           <p className="mt-2 text-sm opacity-90">
@@ -183,80 +214,15 @@ useEffect(() => {
 
         </div>
 
-        <div className="flex items-center gap-4">
-
-          <div className="
-            flex
-            items-center
-            gap-2
-            bg-white/10
-            px-4
-            py-2
-            rounded-full
-          ">
-
-            <div className="
-              w-3
-              h-3
-              rounded-full
-              bg-emerald-400
-              animate-pulse
-            " />
-
-            <span className="
-              text-sm
-              font-semibold
-            ">
-              LIVE • Connected
-            </span>
-
-          </div>
-
-          <div className="
-          flex
-          items-center
-          gap-4
-        ">
-
-          <div className="
-            flex
-            items-center
-            gap-2
-            bg-white/10
-            px-4
-            py-2
-            rounded-full
-          ">
-
-            <div className="
-              w-3
-              h-3
-              rounded-full
-              bg-emerald-400
-              animate-pulse
-            " />
-
-            <span className="
-              text-sm
-              font-semibold
-            ">
-              LIVE • Connected
-            </span>
-
-          </div>
-
-          <button
-            onClick={loadEvents}
-            className="font-semibold"
-          >
-            Refresh
-          </button>
-
-        </div>
-
-        </div>
+        <button
+          onClick={loadEvents}
+          className="font-semibold"
+        >
+          Refresh
+        </button>
 
       </header>
+
 
       <div className="px-4 pt-4">
 
@@ -310,37 +276,31 @@ useEffect(() => {
 
       </div>
 
+
       <div className="p-4 grid grid-cols-4 gap-5">
 
         <Card
           title="Prompts Detected"
           value={totalPrompts}
           colour="#013B93"
-          delta="+12% today"
-          live
         />
 
         <Card
           title="Alerts"
           value={alerts}
           colour="#F59E0B"
-          delta="+4 high risk"
-          live
         />
 
         <Card
           title="Blocked"
           value={blocked}
           colour="#DC2626"
-          delta="Realtime protection"
-          live
         />
 
         <Card
           title="Wellbeing"
           value={wellbeing}
           colour="#10B981"
-          delta="Behaviour stable"
         />
 
       </div>
@@ -474,42 +434,6 @@ useEffect(() => {
                   {event.risk}
                 </div>
 
-                <div className="
-                  flex
-                  items-center
-                  gap-2
-                  mb-3
-                ">
-
-                  <div className="
-                    px-3
-                    py-1
-                    rounded-full
-                    bg-slate-200
-                    text-xs
-                    font-semibold
-                  ">
-                    {event.platform}
-                  </div>
-
-                  {event.blocked && (
-
-                    <div className="
-                      px-3
-                      py-1
-                      rounded-full
-                      bg-red-100
-                      text-red-600
-                      text-xs
-                      font-bold
-                    ">
-                      BLOCKED
-                    </div>
-
-                  )}
-
-                </div>
-
                 <div className="text-lg mb-4">
                   {event.prompt}
                 </div>
@@ -545,7 +469,7 @@ useEffect(() => {
 
           <div className="space-y-4">
 
-            {students.map(student => (
+            {students.map((student:any) => (
 
               <div
                 key={student.name}
@@ -579,83 +503,22 @@ useEffect(() => {
 function Card({
   title,
   value,
-  colour,
-  delta,
-  live
+  colour
 }:any) {
 
   return (
 
-    <div className="
-      bg-white
-      rounded-3xl
-      p-6
-      shadow-sm
-      h-[150px]
-      flex
-      flex-col
-      justify-between
-      transition-all
-      hover:shadow-lg
-    ">
+    <div className="bg-white rounded-3xl p-6 shadow-sm h-[140px] flex flex-col justify-center">
 
-      <div className="
-        flex
-        items-center
-        justify-between
-      ">
-
-        <div className="
-          text-slate-500
-          text-lg
-        ">
-          {title}
-        </div>
-
-        {live && (
-
-          <div className="
-            flex
-            items-center
-            gap-2
-            text-emerald-500
-            text-sm
-            font-semibold
-          ">
-
-            <div className="
-              w-2
-              h-2
-              rounded-full
-              bg-emerald-500
-              animate-pulse
-            " />
-
-            LIVE
-
-          </div>
-
-        )}
-
+      <div className="text-slate-500 text-lg mb-2">
+        {title}
       </div>
 
       <div
-        className="
-          text-6xl
-          font-bold
-        "
-        style={{
-          color: colour
-        }}
+        className="text-6xl font-bold"
+        style={{ color:colour }}
       >
         {value}
-      </div>
-
-      <div className="
-        text-sm
-        text-slate-400
-      ">
-        {delta}
       </div>
 
     </div>
