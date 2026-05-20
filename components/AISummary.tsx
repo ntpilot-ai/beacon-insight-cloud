@@ -17,11 +17,10 @@ interface Props {
 }
 
 export default function AISummary({ events }: Props) {
-  const [summary, setSummary] = useState<string>("");
+  const [summary, setSummary]       = useState<string>("");
   const [suggestion, setSuggestion] = useState<string>("");
-  const [loading, setLoading] = useState(false);
-  const [generated, setGenerated] = useState(false);
-  const prevCountRef = useRef(0);
+  const [loading, setLoading]       = useState(false);
+  const prevCountRef                = useRef(0);
 
   async function generateSummary() {
     if (!events.length) return;
@@ -29,56 +28,20 @@ export default function AISummary({ events }: Props) {
     setSummary("");
     setSuggestion("");
 
-    // Build a compact summary of events to send
-    const recentEvents = events.slice(0, 30).map(e => ({
-      student: e.student_id,
-      risk: e.risk,
-      platform: e.platform,
-      matched: e.matched?.join(", ") ?? "",
-      prompt: e.prompt?.slice(0, 80),
-      time: e.created_at,
-    }));
-
-    const high = events.filter(e => e.risk === "high" || e.risk === "critical").length;
-    const medium = events.filter(e => e.risk === "medium").length;
-    const platforms = [...new Set(events.map(e => e.platform))].join(", ");
-
-    const userMessage = `You are a school safeguarding AI assistant. Analyse this data from Beacon, a real-time AI monitoring platform for schools.
-
-Summary stats:
-- Total events: ${events.length}
-- High/critical risk: ${high}
-- Medium risk: ${medium}
-- Platforms in use: ${platforms}
-
-Recent flagged events (up to 30):
-${JSON.stringify(recentEvents, null, 2)}
-
-Respond ONLY with a JSON object in this exact format, no markdown, no preamble:
-{
-  "summary": "2-3 sentence natural language summary of the key patterns and concerns you notice across the student body. Be specific about risk types and year groups if inferable.",
-  "suggestion": "One clear, actionable suggested next step for the safeguarding team."
-}`;
-
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
+      const res = await fetch("/api/ai-summary", {
+        method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          messages: [{ role: "user", content: userMessage }],
-        }),
+        body:    JSON.stringify({ events }),
       });
 
+      if (!res.ok) throw new Error(await res.text());
+
       const data = await res.json();
-      const text = data.content?.map((c: any) => c.text ?? "").join("") ?? "";
-      const clean = text.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
-      setSummary(parsed.summary ?? "");
-      setSuggestion(parsed.suggestion ?? "");
-      setGenerated(true);
-    } catch {
+      setSummary(data.summary ?? "");
+      setSuggestion(data.suggestion ?? "");
+    } catch (err) {
+      console.error("AI summary error:", err);
       setSummary("Unable to generate summary. Please try again.");
       setSuggestion("");
     } finally {
@@ -86,7 +49,7 @@ Respond ONLY with a JSON object in this exact format, no markdown, no preamble:
     }
   }
 
-  // Auto-generate when events first load, then re-generate if count changes significantly
+  // Auto-generate when events first load, re-generate if count changes by 5+
   useEffect(() => {
     const prev = prevCountRef.current;
     const curr = events.length;
@@ -100,6 +63,7 @@ Respond ONLY with a JSON object in this exact format, no markdown, no preamble:
   return (
     <div className="bg-[#013B93] rounded-2xl shadow-sm overflow-hidden">
       <div className="flex items-stretch">
+
         {/* Left — AI badge */}
         <div className="bg-[#012d70] px-6 py-5 flex flex-col items-center justify-center gap-2 shrink-0 w-20">
           <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-xl">
@@ -116,7 +80,7 @@ Respond ONLY with a JSON object in this exact format, no markdown, no preamble:
             <span className="text-white font-bold text-sm">AI Summary</span>
             {loading && (
               <span className="flex gap-1">
-                {[0,1,2].map(i => (
+                {[0, 1, 2].map(i => (
                   <span
                     key={i}
                     className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce"
@@ -143,7 +107,7 @@ Respond ONLY with a JSON object in this exact format, no markdown, no preamble:
           </div>
         )}
 
-        {/* Refresh button */}
+        {/* Refresh */}
         <div className="px-4 py-5 flex items-center shrink-0">
           <button
             onClick={generateSummary}
@@ -154,6 +118,7 @@ Respond ONLY with a JSON object in this exact format, no markdown, no preamble:
             ↺
           </button>
         </div>
+
       </div>
     </div>
   );
