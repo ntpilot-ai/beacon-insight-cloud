@@ -7,174 +7,177 @@ import Sidebar from "@/components/Sidebar";
 import Image from "next/image";
 import { calculateAllPulses, type StudentPulse } from "@/lib/pulse_engine";
 
-// ── Sparkline ────────────────────────────────────────────────────────────────
-
-function Sparkline({ data, color }: { data: number[]; color: string }) {
+// ── Sparkline ─────────────────────────────────────────────────────────────────
+function Sparkline({ data, color, width = 80, height = 28 }: { data: number[]; color: string; width?: number; height?: number }) {
   const max    = Math.max(...data, 1);
-  const w      = 80;
-  const h      = 28;
   const points = data.map((v, i) => {
-    const x = (i / (data.length - 1)) * w;
-    const y = h - (v / max) * h;
+    const x = (i / (data.length - 1)) * width;
+    const y = height - (v / max) * height;
     return `${x},${y}`;
   }).join(" ");
-
+  const last = data[data.length - 1];
+  const lx   = width;
+  const ly   = height - (last / max) * height;
   return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}>
-      <polyline
-        points={points}
-        fill="none"
-        stroke={color}
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      />
-      {/* Last point dot */}
-      {data.length > 0 && (() => {
-        const last = data[data.length - 1];
-        const x    = w;
-        const y    = h - (last / max) * h;
-        return <circle cx={x} cy={y} r="2.5" fill={color} />;
-      })()}
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+      <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+      <circle cx={lx} cy={ly} r="2.5" fill={color} />
     </svg>
   );
 }
 
-// ── Alert level config ───────────────────────────────────────────────────────
-
+// ── Config ────────────────────────────────────────────────────────────────────
 const ALERT_CONFIG = {
-  critical: { label: "Critical",  bg: "bg-purple-100", text: "text-purple-700", bar: "#7C3AED", border: "border-purple-200" },
-  high:     { label: "High",      bg: "bg-red-100",    text: "text-red-700",    bar: "#DC2626", border: "border-red-200"    },
-  medium:   { label: "Medium",    bg: "bg-amber-100",  text: "text-amber-700",  bar: "#F59E0B", border: "border-amber-200"  },
-  low:      { label: "Low",       bg: "bg-slate-100",  text: "text-slate-500",  bar: "#10B981", border: "border-slate-200"  },
+  critical: { label: "Critical", bg: "bg-purple-100", text: "text-purple-700", bar: "#7C3AED", light: "#F5F3FF" },
+  high:     { label: "High",     bg: "bg-red-100",    text: "text-red-600",    bar: "#DC2626", light: "#FEF2F2" },
+  medium:   { label: "Medium",   bg: "bg-amber-100",  text: "text-amber-700",  bar: "#F59E0B", light: "#FFFBEB" },
+  low:      { label: "Low",      bg: "bg-slate-100",  text: "text-slate-500",  bar: "#10B981", light: "#F0FDF4" },
 };
 
 const TREND_CONFIG = {
-  rising:  { icon: "↑", color: "text-red-500",    label: "Rising"  },
-  falling: { icon: "↓", color: "text-emerald-500", label: "Falling" },
-  stable:  { icon: "→", color: "text-slate-400",   label: "Stable"  },
+  rising:  { icon: "↑", color: "text-red-500",     label: "Rising"  },
+  falling: { icon: "↓", color: "text-emerald-500",  label: "Falling" },
+  stable:  { icon: "→", color: "text-slate-400",    label: "Stable"  },
 };
 
-// ── Student detail panel ─────────────────────────────────────────────────────
-
-function StudentDetail({ pulse, onClose }: { pulse: StudentPulse; onClose: () => void }) {
-  const alert  = ALERT_CONFIG[pulse.alert_level];
-  const trend  = TREND_CONFIG[pulse.trend_direction];
+// ── Detail panel ──────────────────────────────────────────────────────────────
+function StudentDetail({ pulse }: { pulse: StudentPulse }) {
+  const alert = ALERT_CONFIG[pulse.alert_level];
+  const trend = TREND_CONFIG[pulse.trend_direction];
 
   return (
-    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-end" onClick={onClose}>
-      <div
-        className="bg-white h-full w-full max-w-lg shadow-2xl overflow-auto"
-        onClick={e => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="bg-[#06B6D4] text-white px-6 py-5">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <Image src="/pulse_icon.png" alt="Pulse" width={28} height={28} className="object-contain opacity-90" />
-              <span className="text-sm font-semibold opacity-80">Beacon Pulse</span>
+    <div className="flex flex-col h-full overflow-auto">
+
+      {/* Student header */}
+      <div className="px-8 py-6 border-b border-slate-100" style={{ background: alert.light }}>
+        <div className="flex items-start justify-between">
+          <div>
+            <h2 className="text-2xl font-bold text-slate-800">{pulse.student_id}</h2>
+            <div className="flex items-center gap-3 mt-2">
+              <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${alert.bg} ${alert.text}`}>
+                {alert.label} Alert
+              </span>
+              <span className="text-sm text-slate-400">
+                {pulse.total_events} events
+              </span>
+              <span className="text-sm text-slate-400">
+                First seen {new Date(pulse.first_seen).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+              </span>
             </div>
-            <button onClick={onClose} className="text-white/60 hover:text-white text-xl">✕</button>
           </div>
-          <h2 className="text-2xl font-bold">{pulse.student_id}</h2>
-          <div className="flex items-center gap-3 mt-2">
-            <span className={`text-xs font-bold px-2.5 py-1 rounded-full bg-white/20`}>
-              {alert.label} Alert
-            </span>
-            <span className="text-white/70 text-sm">
-              {pulse.total_events} events · First seen {new Date(pulse.first_seen).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
-            </span>
+
+          {/* Big score */}
+          <div className="text-right">
+            <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Pulse Score</div>
+            <div className="text-6xl font-bold leading-none" style={{ color: alert.bar }}>
+              {pulse.pulse_score}
+            </div>
+            <div className={`flex items-center justify-end gap-1 mt-1 text-sm font-semibold ${trend.color}`}>
+              {trend.icon} {trend.label}
+              {pulse.trend_delta !== 0 && (
+                <span className="text-xs font-normal text-slate-400 ml-1">
+                  ({pulse.trend_delta > 0 ? "+" : ""}{pulse.trend_delta} vs prior 7 days)
+                </span>
+              )}
+            </div>
           </div>
         </div>
+      </div>
 
-        <div className="p-6 space-y-6">
+      <div className="flex-1 p-8 space-y-8 overflow-auto">
 
-          {/* Pulse score + sparkline */}
-          <div className="flex items-center justify-between bg-slate-50 rounded-2xl p-5">
-            <div>
-              <div className="text-xs text-slate-400 mb-1 font-semibold uppercase tracking-wide">Pulse Score</div>
-              <div className="text-5xl font-bold" style={{ color: alert.bar }}>{pulse.pulse_score}</div>
-              <div className={`flex items-center gap-1 mt-1 text-sm font-semibold ${trend.color}`}>
-                {trend.icon} {trend.label}
-                {pulse.trend_delta !== 0 && (
-                  <span className="text-xs font-normal text-slate-400 ml-1">
-                    ({pulse.trend_delta > 0 ? "+" : ""}{pulse.trend_delta} vs prior 7 days)
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className="text-right">
-              <div className="text-xs text-slate-400 mb-2">14-day trend</div>
-              <Sparkline data={pulse.trend} color={alert.bar} />
-            </div>
-          </div>
+        {/* 14-day timeline + sparkline side by side */}
+        <div className="grid grid-cols-2 gap-6">
 
-          {/* Dominant signal */}
-          <div className={`rounded-xl border-l-4 p-4 ${alert.border} bg-slate-50`} style={{ borderLeftColor: alert.bar }}>
-            <div className="text-xs font-bold text-slate-400 uppercase tracking-wide mb-1">Primary Concern</div>
-            <div className="font-semibold text-slate-700">{pulse.dominant_signal.label}</div>
-            <div className="text-sm text-slate-500 mt-1">{pulse.dominant_signal.detail}</div>
-          </div>
-
-          {/* All signals */}
-          <div>
-            <h3 className="text-sm font-bold text-slate-600 mb-3 uppercase tracking-wide">Signal Breakdown</h3>
-            <div className="space-y-3">
-              {pulse.signals.sort((a, b) => b.score - a.score).map(sig => (
-                <div key={sig.id}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-sm font-medium text-slate-600">{sig.label}</span>
-                    <span className="text-sm font-bold" style={{
-                      color: sig.score >= 70 ? "#DC2626" : sig.score >= 40 ? "#F59E0B" : "#10B981"
-                    }}>{sig.score}</span>
-                  </div>
-                  <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
-                    <div
-                      className="h-full rounded-full transition-all duration-700"
-                      style={{
-                        width: `${sig.score}%`,
-                        background: sig.score >= 70 ? "#DC2626" : sig.score >= 40 ? "#F59E0B" : "#10B981"
-                      }}
-                    />
-                  </div>
-                  <div className="text-xs text-slate-400 mt-1">{sig.detail}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Timeline */}
-          <div>
-            <h3 className="text-sm font-bold text-slate-600 mb-2 uppercase tracking-wide">14-Day Score Timeline</h3>
-            <div className="flex items-end gap-1 h-20 bg-slate-50 rounded-xl p-3">
+          {/* Timeline bar chart */}
+          <div className="bg-slate-50 rounded-2xl p-5">
+            <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">14-Day Score Timeline</div>
+            <div className="flex items-end gap-1.5 h-24">
               {pulse.trend.map((v, i) => {
                 const max   = Math.max(...pulse.trend, 1);
                 const pct   = (v / max) * 100;
                 const color = v >= 70 ? "#DC2626" : v >= 40 ? "#F59E0B" : v > 0 ? "#06B6D4" : "#e2e8f0";
+                const d     = new Date();
+                d.setDate(d.getDate() - (13 - i));
+                const label = d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
                 return (
-                  <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                  <div key={i} className="flex-1 flex flex-col items-center gap-1 group relative">
                     <div
-                      className="w-full rounded-sm transition-all duration-500"
-                      style={{ height: `${Math.max(pct * 0.56, 2)}px`, background: color }}
+                      className="w-full rounded-t-sm transition-all duration-500"
+                      style={{ height: `${Math.max(pct * 0.8, 2)}px`, background: color }}
                     />
+                    <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[9px] px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 whitespace-nowrap pointer-events-none z-10">
+                      {label}: {v}
+                    </div>
                   </div>
                 );
               })}
             </div>
-            <div className="flex justify-between text-[10px] text-slate-400 mt-1 px-1">
+            <div className="flex justify-between text-[10px] text-slate-400 mt-2">
               <span>14 days ago</span>
               <span>Today</span>
             </div>
           </div>
 
+          {/* Stats grid */}
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              { label: "Last Incident",   value: new Date(pulse.last_seen).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) },
+              { label: "Total Events",    value: pulse.total_events.toString() },
+              { label: "Trend",           value: `${trend.icon} ${trend.label}` },
+              { label: "Score Change",    value: `${pulse.trend_delta > 0 ? "+" : ""}${pulse.trend_delta}` },
+            ].map(s => (
+              <div key={s.label} className="bg-slate-50 rounded-xl p-4">
+                <div className="text-xs text-slate-400 mb-1">{s.label}</div>
+                <div className="font-bold text-slate-700">{s.value}</div>
+              </div>
+            ))}
+          </div>
         </div>
+
+        {/* Primary concern */}
+        <div>
+          <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Primary Concern</div>
+          <div
+            className="rounded-2xl p-5 border-l-4"
+            style={{ borderLeftColor: alert.bar, background: alert.light }}
+          >
+            <div className="font-bold text-slate-800 text-lg mb-1">{pulse.dominant_signal.label}</div>
+            <div className="text-slate-600 text-sm leading-relaxed">{pulse.dominant_signal.detail}</div>
+          </div>
+        </div>
+
+        {/* Signal breakdown */}
+        <div>
+          <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">Signal Breakdown</div>
+          <div className="grid grid-cols-2 gap-4">
+            {pulse.signals.sort((a, b) => b.score - a.score).map(sig => {
+              const sigColor = sig.score >= 70 ? "#DC2626" : sig.score >= 40 ? "#F59E0B" : "#10B981";
+              return (
+                <div key={sig.id} className="bg-slate-50 rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-semibold text-slate-600">{sig.label}</span>
+                    <span className="text-lg font-bold" style={{ color: sigColor }}>{sig.score}</span>
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden mb-2">
+                    <div
+                      className="h-full rounded-full transition-all duration-700"
+                      style={{ width: `${sig.score}%`, background: sigColor }}
+                    />
+                  </div>
+                  <div className="text-xs text-slate-400 leading-relaxed">{sig.detail}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
       </div>
     </div>
   );
 }
 
-// ── Main page ────────────────────────────────────────────────────────────────
-
+// ── Main page ─────────────────────────────────────────────────────────────────
 export default function PulsePage() {
   const { loading: authLoading, authenticated } = useAuth();
   const [events, setEvents]     = useState<any[]>([]);
@@ -189,6 +192,10 @@ export default function PulsePage() {
   }, []);
 
   const pulses = useMemo(() => calculateAllPulses(events), [events]);
+
+  useEffect(() => {
+    if (pulses.length && !selected) setSelected(pulses[0]);
+  }, [pulses]);
 
   const filtered = useMemo(() => pulses.filter(p => {
     if (filter !== "all" && p.alert_level !== filter) return false;
@@ -209,12 +216,12 @@ export default function PulsePage() {
     <div className="flex min-h-screen bg-[#F0F2F8]">
       <Sidebar />
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 min-h-screen">
 
         {/* Header */}
         <header className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
-            <Image src="/pulse_icon.png" alt="Pulse" width={36} height={36} className="object-contain" />
+            <Image src="/pulse_icon.png" alt="Pulse" width={32} height={32} className="object-contain" />
             <div>
               <h1 className="text-2xl font-bold text-[#06B6D4]">Beacon Pulse</h1>
               <p className="text-sm text-slate-400 mt-0.5">Behavioural analytics — student activity over time</p>
@@ -226,144 +233,89 @@ export default function PulsePage() {
           </div>
         </header>
 
-        <main className="flex-1 p-6 overflow-auto">
+        {/* Summary pills */}
+        <div className="bg-white border-b border-slate-100 px-8 py-3 flex items-center gap-3">
+          {(["all", "critical", "high", "medium", "low"] as const).map(level => {
+            const count = level === "all" ? pulses.length : summary[level];
+            const cfg   = level === "all"
+              ? { label: "All", bg: "bg-slate-100", text: "text-slate-600", bar: "#64748b" }
+              : ALERT_CONFIG[level];
+            return (
+              <button
+                key={level}
+                onClick={() => setFilter(level)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+                  filter === level
+                    ? `${cfg.bg} ${cfg.text} ring-1 ring-offset-1`
+                    : "bg-slate-50 text-slate-400 hover:bg-slate-100"
+                }`}
+              >
+                {level !== "all" && <span className="w-1.5 h-1.5 rounded-full" style={{ background: cfg.bar }} />}
+                {cfg.label} <span className="font-bold">{count}</span>
+              </button>
+            );
+          })}
 
-          {/* Summary cards */}
-          <div className="grid grid-cols-4 gap-4 mb-6">
-            {(["critical","high","medium","low"] as const).map(level => {
-              const cfg   = ALERT_CONFIG[level];
-              const count = summary[level];
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search student..."
+            className="ml-auto border border-slate-200 rounded-xl px-3 py-1.5 text-xs w-48 focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20"
+          />
+        </div>
+
+        {/* Split view */}
+        <div className="flex flex-1 min-h-0 overflow-hidden">
+
+          {/* Left — student list */}
+          <div className="w-72 shrink-0 bg-white border-r border-slate-200 overflow-auto">
+            {loading && (
+              <div className="text-center py-12 text-slate-400 text-sm">Loading...</div>
+            )}
+            {!loading && filtered.map(pulse => {
+              const alert   = ALERT_CONFIG[pulse.alert_level];
+              const trend   = TREND_CONFIG[pulse.trend_direction];
+              const isActive = selected?.student_id === pulse.student_id;
               return (
                 <button
-                  key={level}
-                  onClick={() => setFilter(filter === level ? "all" : level)}
-                  className={`bg-white rounded-2xl border p-5 text-left transition-all hover:shadow-md ${
-                    filter === level ? "ring-2 ring-offset-1 border-[#06B6D4]" : "border-slate-100"
+                  key={pulse.student_id}
+                  onClick={() => setSelected(pulse)}
+                  className={`w-full text-left px-5 py-4 border-b border-slate-50 transition-colors ${
+                    isActive ? "bg-cyan-50 border-l-2 border-l-[#06B6D4]" : "hover:bg-slate-50"
                   }`}
                 >
-                  <div className="flex items-center justify-between mb-2">
-                    <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${cfg.bg} ${cfg.text}`}>
-                      {cfg.label}
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="font-semibold text-slate-700 text-sm truncate">{pulse.student_id}</span>
+                    <span className={`text-xs font-bold px-2 py-0.5 rounded-full shrink-0 ml-2 ${alert.bg} ${alert.text}`}>
+                      {pulse.pulse_score}
                     </span>
-                    {filter === level && <span className="text-xs text-slate-400">✓ filtered</span>}
                   </div>
-                  <div className="text-4xl font-bold" style={{ color: cfg.bar }}>{count}</div>
-                  <div className="text-xs text-slate-400 mt-1">students</div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-400">{pulse.dominant_signal.label}</span>
+                    <div className="flex items-center gap-1.5">
+                      <Sparkline data={pulse.trend} color={alert.bar} width={48} height={18} />
+                      <span className={`text-xs font-semibold ${trend.color}`}>{trend.icon}</span>
+                    </div>
+                  </div>
                 </button>
               );
             })}
-          </div>
-
-          {/* Search + filter bar */}
-          <div className="flex items-center gap-3 mb-4">
-            <input
-              type="text"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search student..."
-              className="border border-slate-200 rounded-xl px-4 py-2 text-sm w-64 focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20"
-            />
-            {filter !== "all" && (
-              <button
-                onClick={() => setFilter("all")}
-                className="text-xs text-slate-400 hover:text-slate-600 border border-slate-200 rounded-lg px-3 py-2"
-              >
-                Clear filter ✕
-              </button>
+            {!loading && filtered.length === 0 && (
+              <div className="text-center py-12 text-slate-400 text-sm">No students match</div>
             )}
-            <span className="text-sm text-slate-400 ml-auto">{filtered.length} students</span>
           </div>
 
-          {/* Student table */}
-          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-100 bg-slate-50">
-                  <th className="text-left text-xs font-semibold text-slate-400 px-6 py-3">Student</th>
-                  <th className="text-left text-xs font-semibold text-slate-400 px-4 py-3">Pulse Score</th>
-                  <th className="text-left text-xs font-semibold text-slate-400 px-4 py-3">14-Day Trend</th>
-                  <th className="text-left text-xs font-semibold text-slate-400 px-4 py-3">Direction</th>
-                  <th className="text-left text-xs font-semibold text-slate-400 px-4 py-3">Primary Concern</th>
-                  <th className="text-left text-xs font-semibold text-slate-400 px-4 py-3">Alert</th>
-                  <th className="text-left text-xs font-semibold text-slate-400 px-4 py-3">Events</th>
-                  <th className="px-4 py-3" />
-                </tr>
-              </thead>
-              <tbody>
-                {loading && (
-                  <tr><td colSpan={8} className="text-center py-12 text-slate-400 text-sm">Loading behavioural data...</td></tr>
-                )}
-                {!loading && filtered.length === 0 && (
-                  <tr><td colSpan={8} className="text-center py-12 text-slate-400 text-sm">No students match this filter</td></tr>
-                )}
-                {filtered.map(pulse => {
-                  const alert = ALERT_CONFIG[pulse.alert_level];
-                  const trend = TREND_CONFIG[pulse.trend_direction];
-                  return (
-                    <tr
-                      key={pulse.student_id}
-                      className="border-b border-slate-50 hover:bg-slate-50/60 cursor-pointer transition-colors"
-                      onClick={() => setSelected(pulse)}
-                    >
-                      <td className="px-6 py-4 font-medium text-slate-700">{pulse.student_id}</td>
-
-                      {/* Score with bar */}
-                      <td className="px-4 py-4">
-                        <div className="flex items-center gap-2">
-                          <div className="w-16 h-2 rounded-full bg-slate-100 overflow-hidden">
-                            <div
-                              className="h-full rounded-full"
-                              style={{ width: `${pulse.pulse_score}%`, background: alert.bar }}
-                            />
-                          </div>
-                          <span className="font-bold text-sm" style={{ color: alert.bar }}>
-                            {pulse.pulse_score}
-                          </span>
-                        </div>
-                      </td>
-
-                      {/* Sparkline */}
-                      <td className="px-4 py-4">
-                        <Sparkline data={pulse.trend} color={alert.bar} />
-                      </td>
-
-                      {/* Direction */}
-                      <td className="px-4 py-4">
-                        <span className={`flex items-center gap-1 text-sm font-semibold ${trend.color}`}>
-                          {trend.icon} {trend.label}
-                        </span>
-                      </td>
-
-                      {/* Primary concern */}
-                      <td className="px-4 py-4 max-w-[200px]">
-                        <div className="text-xs font-semibold text-slate-600">{pulse.dominant_signal.label}</div>
-                        <div className="text-xs text-slate-400 truncate mt-0.5">{pulse.dominant_signal.detail}</div>
-                      </td>
-
-                      {/* Alert badge */}
-                      <td className="px-4 py-4">
-                        <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${alert.bg} ${alert.text}`}>
-                          {alert.label}
-                        </span>
-                      </td>
-
-                      {/* Event count */}
-                      <td className="px-4 py-4 text-slate-400 text-sm">{pulse.total_events}</td>
-
-                      {/* Arrow */}
-                      <td className="px-4 py-4 text-slate-300">→</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          {/* Right — detail */}
+          <div className="flex-1 bg-white overflow-auto">
+            {selected
+              ? <StudentDetail pulse={selected} />
+              : <div className="flex items-center justify-center h-full text-slate-400 text-sm">Select a student</div>
+            }
           </div>
 
-        </main>
+        </div>
       </div>
-
-      {/* Detail panel */}
-      {selected && <StudentDetail pulse={selected} onClose={() => setSelected(null)} />}
     </div>
   );
 }

@@ -37,10 +37,21 @@ const TERMS = [
   { label: "All Time",         start: "2000-01-01", end: "2099-12-31" },
 ];
 
+function getCurrentTerm(): string {
+  const now = new Date();
+  const current = TERMS.find(t => {
+    const s = new Date(t.start);
+    const e = new Date(t.end);
+    e.setHours(23, 59, 59);
+    return now >= s && now <= e && t.label !== "All Time";
+  });
+  return current?.label ?? "All Time";
+}
+
 export default function Dashboard() {
   const { loading: authLoading, authenticated } = useAuth();
   const [events, setEvents] = useState<BeaconEvent[]>([]);
-  const [term, setTerm] = useState(TERMS[3].label);
+  const [term, setTerm] = useState(getCurrentTerm);
   const [live, setLive] = useState(true);
 
   async function loadEvents() {
