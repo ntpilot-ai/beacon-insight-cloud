@@ -39,7 +39,7 @@ export default function BeaconIntelligence({ events, schoolName = "the school" }
   const prevCountRef            = useRef(0);
 
   async function generate() {
-    if (!events.length) return;
+    if (!events?.length) return;
     setLoading(true);
     setIntel(null);
 
@@ -116,7 +116,7 @@ Data:
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events.length]);
 
-  const cfg = intel ? RISK_CONFIG[intel.risk_level] : RISK_CONFIG.low;
+  const cfg = intel?.risk_level ? (RISK_CONFIG[intel.risk_level] ?? RISK_CONFIG.low) : RISK_CONFIG.low;
 
   return (
     <div className="mb-6 rounded-2xl overflow-hidden shadow-sm border border-slate-100">
