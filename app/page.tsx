@@ -143,6 +143,19 @@ export default function Dashboard() {
             wellbeingDelta={wellbeingDelta}
           />
 
+          {/* Trend + Platform row */}
+          <div className="grid grid-cols-2 gap-5 mb-6">
+            <TrendLine events={filteredEvents} />
+            <PlatformUsage events={filteredEvents} />
+          </div>
+
+          {/* Repeat Incidents */}
+          <div className="mb-6">
+            <RepeatIncidents events={filteredEvents} />
+          </div>
+
+
+
           <div className="grid grid-cols-[1fr_340px] gap-5 mb-6">
             <EventsTable events={filteredEvents} />
             <div className="flex flex-col gap-5">
