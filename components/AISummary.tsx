@@ -179,7 +179,7 @@ Data:
 
       {/* Expanded detail */}
       {expanded && intel && (
-        <div className="bg-white px-6 py-5 grid grid-cols-[1fr_auto] gap-6">
+        <div className="bg-white px-6 py-5 grid grid-cols-[2fr_1fr] gap-6">
 
           {/* Left — summary */}
           <div>
@@ -188,7 +188,7 @@ Data:
           </div>
 
           {/* Right — actions */}
-          <div className="min-w-[280px] border-l border-slate-100 pl-6">
+          <div className="border-l border-slate-100 pl-6">
             <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Suggested Actions</div>
             <div className="space-y-2">
               {intel.actions.map((action, i) => (
