@@ -41,9 +41,12 @@ const TREND_CONFIG = {
 };
 
 // ── Detail panel ──────────────────────────────────────────────────────────────
-function StudentDetail({ pulse }: { pulse: StudentPulse }) {
+function StudentDetail({ pulse, events }: { pulse: StudentPulse; events: any[] }) {
   const alert = ALERT_CONFIG[pulse.alert_level];
   const trend = TREND_CONFIG[pulse.trend_direction];
+  const studentEvents = events
+    .filter((e: any) => e.student_id === pulse.student_id)
+    .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
   return (
     <div className="flex flex-col h-full overflow-auto">
@@ -166,6 +169,64 @@ function StudentDetail({ pulse }: { pulse: StudentPulse }) {
                     />
                   </div>
                   <div className="text-xs text-slate-400 leading-relaxed">{sig.detail}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Prompt history */}
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Prompt History</div>
+            <button
+              onClick={() => window.open(`/reports/student?student=${encodeURIComponent(pulse.student_id)}`, '_blank')}
+              className="flex items-center gap-2 text-xs font-semibold text-[#06B6D4] border border-[#06B6D4] px-3 py-1.5 rounded-xl hover:bg-cyan-50 transition-all"
+            >
+              ⬇ Download PDF Report
+            </button>
+          </div>
+
+          <div className="space-y-2 max-h-[400px] overflow-auto">
+            {studentEvents.length === 0 && (
+              <div className="text-sm text-slate-400 text-center py-6">No events found</div>
+            )}
+            {studentEvents.map((event: any, idx: number) => {
+              const riskColor =
+                event.risk === "high" || event.risk === "critical" ? "#DC2626" :
+                event.risk === "medium" ? "#F59E0B" : "#10B981";
+              const borderColor =
+                event.risk === "high" || event.risk === "critical" ? "border-red-200" :
+                event.risk === "medium" ? "border-amber-200" : "border-slate-200";
+              return (
+                <div key={idx} className={`flex gap-4 p-4 rounded-xl border ${borderColor} bg-slate-50 hover:bg-white transition-colors`}>
+                  <div className="shrink-0 text-right w-20">
+                    <div className="text-xs text-slate-400">
+                      {new Date(event.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+                    </div>
+                    <div className="text-xs text-slate-400">
+                      {new Date(event.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                    </div>
+                    <div className="text-xs font-bold mt-1" style={{ color: riskColor }}>
+                      {event.risk.toUpperCase()}
+                    </div>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-slate-700 leading-relaxed">{event.prompt}</p>
+                    <div className="flex items-center gap-3 mt-2">
+                      <span className="text-xs text-slate-400">{event.platform}</span>
+                      {event.matched?.length > 0 && (
+                        <div className="flex gap-1 flex-wrap">
+                          {event.matched.map((m: string) => (
+                            <span key={m} className="text-[10px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-mono">{m}</span>
+                          ))}
+                        </div>
+                      )}
+                      {event.blocked && (
+                        <span className="text-[10px] font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded-full">Blocked</span>
+                      )}
+                    </div>
+                  </div>
                 </div>
               );
             })}
@@ -309,7 +370,7 @@ export default function PulsePage() {
           {/* Right — detail */}
           <div className="flex-1 bg-white overflow-auto">
             {selected
-              ? <StudentDetail pulse={selected} />
+              ? <StudentDetail pulse={selected} events={events} />
               : <div className="flex items-center justify-center h-full text-slate-400 text-sm">Select a student</div>
             }
           </div>
