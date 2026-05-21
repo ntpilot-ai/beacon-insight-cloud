@@ -7,7 +7,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "ANTHROPIC_API_KEY not configured" }, { status: 500 });
   }
 
-  const { events } = await req.json();
+  const { events, prompt_override } = await req.json();
 
   if (!events?.length) {
     return NextResponse.json({ error: "No events provided" }, { status: 400 });

@@ -13,7 +13,7 @@ import QuickActions from "@/components/QuickActions";
 import TrendLine from "@/components/TrendLine";
 import RepeatIncidents from "@/components/RepeatIncidents";
 import PlatformUsage from "@/components/PlatformUsage";
-import AISummary from "@/components/AISummary";
+import BeaconIntelligence from "@/components/AISummary";
 
 interface BeaconEvent {
   id: number;
@@ -147,6 +147,8 @@ export default function Dashboard() {
         {/* Main content */}
         <main className="flex-1 p-6 overflow-auto">
 
+          <BeaconIntelligence events={filteredEvents} schoolName={SCHOOL_NAME} />
+
           <KPIGrid
             totalPrompts={totalPrompts}
             studentCount={studentCount}
@@ -176,8 +178,6 @@ export default function Dashboard() {
               <QuickActions />
             </div>
           </div>
-
-          <AISummary events={filteredEvents} />
 
         </main>
       </div>
