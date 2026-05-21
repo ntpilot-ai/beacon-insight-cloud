@@ -7,7 +7,8 @@ import { supabase } from "@/lib/supabase";
 
 const NAV_ITEMS = [
   { icon: "⌂",  label: "Dashboard", href: "/"      },
-  { icon: "🛡",  label: "Atlas",     href: "/atlas" },
+  { icon: "🛡",  label: "Atlas",     href: "/atlas"  },
+  { icon: "📈",  label: "Pulse",     href: "/pulse"  },
   { icon: "📊",  label: "Reports",   href: null     },
   { icon: "👤",  label: "Students",  href: null     },
   { icon: "🔔",  label: "Alerts",    href: null     },

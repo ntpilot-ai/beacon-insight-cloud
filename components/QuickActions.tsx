@@ -12,6 +12,11 @@ export default function QuickActions() {
       onClick: () => document.getElementById("repeat-incidents")?.scrollIntoView({ behavior: "smooth" }),
     },
     {
+      icon:    "📈",
+      label:   "Pulse Analytics",
+      onClick: () => router.push("/pulse"),
+    },
+    {
       icon:    "⬇",
       label:   "Download Safeguarding Report",
       onClick: () => router.push("/reports/school"),
