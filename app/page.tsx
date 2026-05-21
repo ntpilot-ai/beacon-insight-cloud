@@ -11,6 +11,7 @@ import EventsTable from "@/components/EventsTable";
 import RiskBreakdown from "@/components/RiskBreakdown";
 import QuickActions from "@/components/QuickActions";
 import TrendLine from "@/components/TrendLine";
+import RepeatIncidents from "@/components/RepeatIncidents";
 import AISummary from "@/components/AISummary";
 
 interface BeaconEvent {
