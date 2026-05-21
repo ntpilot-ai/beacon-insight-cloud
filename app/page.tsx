@@ -13,7 +13,6 @@ import QuickActions from "@/components/QuickActions";
 import TrendLine from "@/components/TrendLine";
 import RepeatIncidents from "@/components/RepeatIncidents";
 import PlatformUsage from "@/components/PlatformUsage";
-import PlatformUsage from "@/components/PlatformUsage";
 import AISummary from "@/components/AISummary";
 
 interface BeaconEvent {
