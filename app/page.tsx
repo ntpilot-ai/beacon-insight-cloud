@@ -150,7 +150,7 @@ export default function Dashboard() {
           </div>
 
           {/* Repeat Incidents */}
-          <div className="mb-6">
+          <div className="mb-6" id="repeat-incidents">
             <RepeatIncidents events={filteredEvents} />
           </div>
 
