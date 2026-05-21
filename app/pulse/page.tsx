@@ -49,7 +49,7 @@ function StudentDetail({ pulse, events }: { pulse: StudentPulse; events: any[] }
     .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
   return (
-    <div className="flex flex-col h-full overflow-auto">
+    <div className="flex flex-col">
 
       {/* Student header */}
       <div className="px-8 py-6 border-b border-slate-100" style={{ background: alert.light }}>
@@ -87,7 +87,7 @@ function StudentDetail({ pulse, events }: { pulse: StudentPulse; events: any[] }
         </div>
       </div>
 
-      <div className="flex-1 p-8 space-y-8 overflow-auto">
+      <div className="p-8 space-y-8">
 
         {/* 14-day timeline + sparkline side by side */}
         <div className="grid grid-cols-2 gap-6">
@@ -187,7 +187,7 @@ function StudentDetail({ pulse, events }: { pulse: StudentPulse; events: any[] }
             </button>
           </div>
 
-          <div className="space-y-2 max-h-[400px] overflow-auto">
+          <div className="space-y-2">
             {studentEvents.length === 0 && (
               <div className="text-sm text-slate-400 text-center py-6">No events found</div>
             )}
