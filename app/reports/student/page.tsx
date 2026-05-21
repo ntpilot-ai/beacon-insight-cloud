@@ -88,34 +88,17 @@ function StudentReportContent() {
   return (
     <div className="min-h-screen bg-white">
 
-      {/* Controls */}
-      <div className="print:hidden bg-[#013B93] text-white px-8 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <a href="/" className="text-white/70 hover:text-white text-sm">← Back to Dashboard</a>
-          <select
-            value={selected}
-            onChange={e => setSelected(e.target.value)}
-            className="text-sm bg-white/10 border border-white/20 rounded-lg px-3 py-1.5 text-white"
-          >
-            {allStudents.map(id => (
-              <option key={id} value={id} className="text-slate-800">{id}</option>
-            ))}
-          </select>
-        </div>
-        <button
-          onClick={() => window.print()}
-          className="bg-white text-[#013B93] font-bold px-6 py-2 rounded-xl hover:bg-blue-50 transition-all text-sm"
-        >
-          ⬇ Download PDF
-        </button>
+      {/* Controls — back link only, print button moved to header */}
+      <div className="print:hidden bg-[#013B93] text-white px-8 py-3 flex items-center">
+        <a href="/" className="text-white/70 hover:text-white text-sm">← Back to Dashboard</a>
       </div>
 
       <div className="max-w-4xl mx-auto px-10 py-10 print:px-8 print:py-6">
 
         {/* Header */}
-        <div className="flex items-start justify-between mb-8 pb-6 border-b-2 border-[#013B93]">
-          <div>
-            <div className="flex items-center gap-3 mb-2">
+        <div className="mb-8 pb-6 border-b-2 border-[#013B93]">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3 mb-3">
               <div className="w-10 h-10 rounded-xl bg-[#013B93] flex items-center justify-center">
                 <span className="text-white font-bold text-lg">B</span>
               </div>
@@ -124,13 +107,38 @@ function StudentReportContent() {
                 <div className="text-xs text-slate-400">{SCHOOL_NAME}</div>
               </div>
             </div>
-            <h1 className="text-3xl font-bold text-[#013B93] mt-3">Student Safeguarding Report</h1>
-            <h2 className="text-xl text-slate-600 mt-1">{selected || "—"}</h2>
+            <div className="text-right text-xs text-slate-400">
+              <div>Generated: {generatedAt}</div>
+              <div className="mt-1 font-semibold text-slate-500">CONFIDENTIAL</div>
+            </div>
           </div>
-          <div className="text-right text-xs text-slate-400">
-            <div>Generated: {generatedAt}</div>
-            <div className="mt-1 font-semibold text-slate-500">CONFIDENTIAL</div>
+
+          <h1 className="text-3xl font-bold text-[#013B93] mb-4">Student Safeguarding Report</h1>
+
+          {/* Student selector + download — hidden when printing */}
+          <div className="print:hidden flex items-center justify-between gap-4">
+            <select
+              value={selected}
+              onChange={e => setSelected(e.target.value)}
+              className="flex-1 max-w-sm border-2 border-[#013B93] rounded-xl px-4 py-2.5 text-slate-700 font-medium bg-white focus:outline-none focus:ring-2 focus:ring-[#013B93]/20 text-sm"
+            >
+              <option value="" disabled>Select Student</option>
+              {allStudents.map(id => (
+                <option key={id} value={id}>{id}</option>
+              ))}
+            </select>
+
+            <button
+              onClick={() => window.print()}
+              disabled={!selected}
+              className="bg-[#013B93] text-white font-bold px-6 py-2.5 rounded-xl hover:bg-[#012d70] disabled:opacity-40 transition-all text-sm flex items-center gap-2"
+            >
+              ⬇ Download PDF
+            </button>
           </div>
+
+          {/* Show selected student name when printing */}
+          <div className="hidden print:block text-xl text-slate-600 mt-2">{selected || "—"}</div>
         </div>
 
         {/* Student summary */}
