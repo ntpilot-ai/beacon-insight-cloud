@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/useAuth";
 import Sidebar from "@/components/Sidebar";
 import Image from "next/image";
-import { calculateAllPulses, StudentPulse } from "@/lib/pulse_engine";
+import { calculateAllPulses, type StudentPulse } from "@/lib/pulse_engine";
 
 // ── Sparkline ────────────────────────────────────────────────────────────────
 
@@ -238,9 +238,8 @@ export default function PulsePage() {
                   key={level}
                   onClick={() => setFilter(filter === level ? "all" : level)}
                   className={`bg-white rounded-2xl border p-5 text-left transition-all hover:shadow-md ${
-                    filter === level ? `ring-2 ring-offset-1` : "border-slate-100"
+                    filter === level ? "ring-2 ring-offset-1 border-[#06B6D4]" : "border-slate-100"
                   }`}
-                  style={filter === level ? { ringColor: cfg.bar } : {}}
                 >
                   <div className="flex items-center justify-between mb-2">
                     <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${cfg.bg} ${cfg.text}`}>
