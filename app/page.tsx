@@ -94,6 +94,7 @@ export default function Dashboard() {
 
   // KPIs
   const totalPrompts = filteredEvents.length;
+  const studentCount = new Set(filteredEvents.map(e => e.student_id)).size;
   const alerts = filteredEvents.filter(e => e.risk !== "low").length;
   const blocked = filteredEvents.filter(e => e.blocked).length;
   const wellbeing = parseFloat(
@@ -148,6 +149,7 @@ export default function Dashboard() {
 
           <KPIGrid
             totalPrompts={totalPrompts}
+            studentCount={studentCount}
             alerts={alerts}
             blocked={blocked}
             wellbeing={wellbeing.toFixed(1)}

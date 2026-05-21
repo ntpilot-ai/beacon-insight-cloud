@@ -1,5 +1,6 @@
 interface Props {
   totalPrompts: number;
+  studentCount: number;
   alerts: number;
   blocked: number;
   wellbeing: string;
@@ -44,15 +45,22 @@ function KPICard({
   );
 }
 
-export default function KPIGrid({ totalPrompts, alerts, blocked, wellbeing, wellbeingDelta = 0 }: Props) {
+export default function KPIGrid({ totalPrompts, studentCount, alerts, blocked, wellbeing, wellbeingDelta = 0 }: Props) {
   return (
-    <div className="grid grid-cols-4 gap-4 mb-6">
+    <div className="grid grid-cols-5 gap-4 mb-6">
+      <KPICard
+        icon="💬"
+        label="Total Prompts"
+        value={totalPrompts}
+        deltaLabel="AI prompts captured"
+        accent="#06B6D4"
+      />
       <KPICard
         icon="👥"
         label="Students Monitored"
-        value={totalPrompts}
-        delta={<span className="text-emerald-500 font-semibold">↑ 12 this week</span>}
-        accent="#06B6D4"
+        value={studentCount}
+        deltaLabel="unique students"
+        accent="#8B5CF6"
       />
       <KPICard
         icon="🔔"
