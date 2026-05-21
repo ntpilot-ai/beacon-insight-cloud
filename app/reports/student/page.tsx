@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { SCHOOL_NAME } from "@/lib/config";
@@ -35,7 +35,7 @@ const RISK_COLOR: Record<string, string> = {
   low:      "#10B981",
 };
 
-export default function StudentReportPage() {
+function StudentReportContent() {
   const { loading: authLoading, authenticated } = useAuth();
   const params    = useSearchParams();
   const studentId = params.get("student") || "";
@@ -257,5 +257,13 @@ export default function StudentReportPage() {
         }
       `}</style>
     </div>
+  );
+}
+
+export default function StudentReportPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-white flex items-center justify-center text-slate-400 text-sm">Loading...</div>}>
+      <StudentReportContent />
+    </Suspense>
   );
 }
