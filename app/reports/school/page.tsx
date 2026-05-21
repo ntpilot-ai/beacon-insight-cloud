@@ -116,7 +116,7 @@ export default function SchoolReportPage() {
         <div className="flex items-start justify-between mb-8 pb-6 border-b-2 border-[#06B6D4]">
           <div>
             <div className="flex items-center gap-3 mb-2">
-              <div className="w-10 h-10 rounded-xl bg-[#06B6D4] flex items-center justify-center overflow-hidden p-1">
+              <div className="w-10 h-10 flex items-center justify-center">
                 <Image src="/insight_icon.png" alt="Beacon Insight" width={36} height={36} className="object-contain" />
               </div>
               <div>

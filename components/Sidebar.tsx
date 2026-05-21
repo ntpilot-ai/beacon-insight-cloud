@@ -28,7 +28,7 @@ export default function Sidebar() {
     <aside className="w-16 min-h-screen bg-[#06B6D4] flex flex-col items-center py-4 gap-1 shrink-0">
 
       {/* Logo */}
-      <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center mb-4 overflow-hidden p-1">
+      <div className="w-10 h-10 flex items-center justify-center mb-4">
         <Image
           src="/insight_icon.png"
           alt="Beacon Insight"

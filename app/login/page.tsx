@@ -54,8 +54,8 @@ export default function LoginPage() {
       <div className="w-full max-w-md">
 
         <div className="flex items-center gap-3 justify-center mb-8">
-          <div className="w-12 h-12 rounded-2xl bg-[#06B6D4] flex items-center justify-center overflow-hidden p-1.5">
-            <Image src="/insight_icon.png" alt="Beacon Insight" width={44} height={44} className="object-contain" />
+          <div className="w-12 h-12 flex items-center justify-center">
+            <Image src="/insight_icon.png" alt="Beacon Insight" width={48} height={48} className="object-contain" />
           </div>
           <div>
             <div className="text-2xl font-bold text-[#06B6D4]">Beacon Insight</div>
