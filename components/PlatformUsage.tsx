@@ -12,7 +12,7 @@ interface Props {
   events: { platform: string }[];
 }
 
-const COLORS = ["#013B93", "#10B981", "#F59E0B", "#DC2626", "#8B5CF6", "#0EA5E9"];
+const COLORS = ["#06B6D4", "#10B981", "#F59E0B", "#DC2626", "#8B5CF6", "#0EA5E9"];
 
 const PLATFORM_LABELS: Record<string, string> = {
   "chatgpt.com":            "ChatGPT",
@@ -68,7 +68,7 @@ export default function PlatformUsage({ events }: Props) {
   if (!total) {
     return (
       <section className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6 h-[340px] flex flex-col">
-        <h2 className="text-lg font-bold text-[#013B93] mb-1">Platform Usage</h2>
+        <h2 className="text-lg font-bold text-[#06B6D4] mb-1">Platform Usage</h2>
         <p className="text-xs text-slate-400">Total prompts per AI platform</p>
         <div className="flex-1 flex items-center justify-center text-slate-300 text-sm">
           No data yet
@@ -80,7 +80,7 @@ export default function PlatformUsage({ events }: Props) {
   return (
     <section className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6 h-[340px] flex flex-col">
       <div className="mb-4">
-        <h2 className="text-lg font-bold text-[#013B93]">Platform Usage</h2>
+        <h2 className="text-lg font-bold text-[#06B6D4]">Platform Usage</h2>
         <p className="text-xs text-slate-400 mt-0.5">Total prompts per AI platform · {total} total</p>
       </div>
 

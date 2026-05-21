@@ -275,7 +275,7 @@ export default function RepeatIncidents({ events }: Props) {
 
       <div className="flex items-center justify-between mb-5">
         <div>
-          <h2 className="text-lg font-bold text-[#013B93]">Repeat Incidents</h2>
+          <h2 className="text-lg font-bold text-[#06B6D4]">Repeat Incidents</h2>
           <p className="text-xs text-slate-400 mt-0.5">
             Click any student to see their full incident history
           </p>
@@ -325,7 +325,7 @@ export default function RepeatIncidents({ events }: Props) {
       {students.length > 5 && (
         <button
           onClick={() => setShowAll(s => !s)}
-          className="mt-4 text-sm text-[#013B93] font-semibold hover:underline"
+          className="mt-4 text-sm text-[#06B6D4] font-semibold hover:underline"
         >
           {showAll ? "Show less ↑" : `Show all ${students.length} students ↓`}
         </button>

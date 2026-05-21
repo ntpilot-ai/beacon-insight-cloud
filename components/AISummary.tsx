@@ -61,7 +61,7 @@ export default function AISummary({ events }: Props) {
   }, [events.length]);
 
   return (
-    <div className="bg-[#013B93] rounded-2xl shadow-sm overflow-hidden">
+    <div className="bg-[#06B6D4] rounded-2xl shadow-sm overflow-hidden">
       <div className="flex items-stretch">
 
         {/* Left — AI badge */}

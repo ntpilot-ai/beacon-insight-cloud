@@ -102,7 +102,7 @@ export default function Dashboard() {
         {/* Top bar */}
         <header className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between shrink-0">
           <div>
-            <h1 className="text-2xl font-bold text-[#013B93]">{SCHOOL_NAME} — Reporting Dashboard</h1>
+            <h1 className="text-2xl font-bold text-[#06B6D4]">{SCHOOL_NAME} — Insight Dashboard</h1>
             <p className="text-sm text-slate-400 mt-0.5">Teacher safeguarding, wellbeing and engagement overview</p>
           </div>
 
@@ -110,7 +110,7 @@ export default function Dashboard() {
             <select
               value={term}
               onChange={e => setTerm(e.target.value)}
-              className="text-sm border border-slate-200 rounded-xl px-4 py-2 text-slate-600 bg-white focus:outline-none focus:ring-2 focus:ring-[#013B93]/20 cursor-pointer"
+              className="text-sm border border-slate-200 rounded-xl px-4 py-2 text-slate-600 bg-white focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20 cursor-pointer"
             >
               {TERMS.map(t => (
                 <option key={t.label} value={t.label}>{t.label}</option>
@@ -120,7 +120,7 @@ export default function Dashboard() {
             <button
               onClick={loadEvents}
               title="Refresh data"
-              className="w-9 h-9 rounded-xl border border-slate-200 flex items-center justify-center text-slate-400 hover:text-[#013B93] hover:border-[#013B93] transition-all"
+              className="w-9 h-9 rounded-xl border border-slate-200 flex items-center justify-center text-slate-400 hover:text-[#06B6D4] hover:border-[#06B6D4] transition-all"
             >
               ↺
             </button>

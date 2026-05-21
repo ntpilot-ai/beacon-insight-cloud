@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
 
@@ -53,11 +54,11 @@ export default function LoginPage() {
       <div className="w-full max-w-md">
 
         <div className="flex items-center gap-3 justify-center mb-8">
-          <div className="w-12 h-12 rounded-2xl bg-[#013B93] flex items-center justify-center">
-            <span className="text-white text-xl font-bold">B</span>
+          <div className="w-12 h-12 rounded-2xl bg-[#06B6D4] flex items-center justify-center overflow-hidden p-1.5">
+            <Image src="/insight_icon.png" alt="Beacon Insight" width={44} height={44} className="object-contain" />
           </div>
           <div>
-            <div className="text-2xl font-bold text-[#013B93]">Beacon Insight</div>
+            <div className="text-2xl font-bold text-[#06B6D4]">Beacon Insight</div>
             <div className="text-xs text-slate-400">Safeguarding intelligence platform</div>
           </div>
         </div>
@@ -88,7 +89,7 @@ export default function LoginPage() {
                   onChange={e => setEmail(e.target.value)}
                   placeholder="you@school.ac.uk"
                   required
-                  className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#013B93]/20"
+                  className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20"
                 />
               </div>
 
@@ -103,7 +104,7 @@ export default function LoginPage() {
                     onChange={e => setPassword(e.target.value)}
                     placeholder="••••••••"
                     required
-                    className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#013B93]/20"
+                    className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20"
                   />
                 </div>
               )}
@@ -115,7 +116,7 @@ export default function LoginPage() {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full bg-[#013B93] text-white font-semibold py-2.5 rounded-xl hover:bg-[#012d70] disabled:opacity-40 transition-all text-sm"
+                className="w-full bg-[#06B6D4] text-white font-semibold py-2.5 rounded-xl hover:bg-[#012d70] disabled:opacity-40 transition-all text-sm"
               >
                 {loading ? "Signing in..." : mode === "login" ? "Sign in" : "Send magic link"}
               </button>
@@ -123,7 +124,7 @@ export default function LoginPage() {
               <button
                 type="button"
                 onClick={() => { setMode(mode === "login" ? "magic" : "login"); setError(""); }}
-                className="w-full text-xs text-slate-400 hover:text-[#013B93] transition-colors py-1"
+                className="w-full text-xs text-slate-400 hover:text-[#06B6D4] transition-colors py-1"
               >
                 {mode === "login" ? "Sign in with magic link instead" : "Sign in with password instead"}
               </button>

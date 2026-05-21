@@ -136,7 +136,7 @@ export default function EventsTable({ events }: { events: BeaconEvent[] }) {
     <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h2 className="text-lg font-bold text-[#013B93]">Recent Safeguarding Events</h2>
+          <h2 className="text-lg font-bold text-[#06B6D4]">Recent Safeguarding Events</h2>
           <p className="text-xs text-slate-400 mt-0.5">AI-flagged incidents requiring review or follow-up</p>
         </div>
         <span className="text-xs text-slate-400 font-medium">
@@ -166,7 +166,7 @@ export default function EventsTable({ events }: { events: BeaconEvent[] }) {
         </tbody>
       </table>
 
-      <button className="mt-4 text-sm text-[#013B93] font-semibold hover:underline flex items-center gap-1">
+      <button className="mt-4 text-sm text-[#06B6D4] font-semibold hover:underline flex items-center gap-1">
         View all events →
       </button>
     </div>

@@ -32,7 +32,7 @@ function KPICard({
         </div>
         <span className="text-sm text-slate-500 font-medium">{label}</span>
       </div>
-      <div className="text-4xl font-bold text-[#013B93]" style={{ color: accent }}>
+      <div className="text-4xl font-bold text-[#06B6D4]" style={{ color: accent }}>
         {value}
       </div>
       {delta !== undefined && (
@@ -52,7 +52,7 @@ export default function KPIGrid({ totalPrompts, alerts, blocked, wellbeing, well
         label="Students Monitored"
         value={totalPrompts}
         delta={<span className="text-emerald-500 font-semibold">↑ 12 this week</span>}
-        accent="#013B93"
+        accent="#06B6D4"
       />
       <KPICard
         icon="🔔"

@@ -93,7 +93,7 @@ export default function AtlasPage() {
         {/* Header */}
         <header className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between shrink-0">
           <div>
-            <h1 className="text-2xl font-bold text-[#013B93]">Beacon Atlas</h1>
+            <h1 className="text-2xl font-bold text-[#06B6D4]">Beacon Atlas</h1>
             <p className="text-sm text-slate-400 mt-0.5">
               {SCHOOL_NAME} — keyword policies synced to all monitored devices
             </p>
@@ -108,7 +108,7 @@ export default function AtlasPage() {
 
           {/* Add policy */}
           <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6 mb-6">
-            <h2 className="text-base font-bold text-[#013B93] mb-4">Add Policy Keyword</h2>
+            <h2 className="text-base font-bold text-[#06B6D4] mb-4">Add Policy Keyword</h2>
             <div className="flex gap-3 items-start">
               <div className="flex-1">
                 <input
@@ -117,7 +117,7 @@ export default function AtlasPage() {
                   onChange={e => { setWord(e.target.value); setError(""); }}
                   onKeyDown={e => e.key === "Enter" && addPolicy()}
                   placeholder="Enter keyword or phrase..."
-                  className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#013B93]/20"
+                  className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20"
                 />
                 {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
               </div>
@@ -125,7 +125,7 @@ export default function AtlasPage() {
               <select
                 value={severity}
                 onChange={e => setSeverity(e.target.value as "high" | "medium")}
-                className="border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-600 bg-white focus:outline-none focus:ring-2 focus:ring-[#013B93]/20"
+                className="border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-600 bg-white focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20"
               >
                 <option value="high">High Risk</option>
                 <option value="medium">Medium Risk</option>
@@ -134,7 +134,7 @@ export default function AtlasPage() {
               <button
                 onClick={addPolicy}
                 disabled={saving || !word.trim()}
-                className="bg-[#013B93] text-white text-sm font-semibold px-6 py-2.5 rounded-xl hover:bg-[#012d70] disabled:opacity-40 transition-all"
+                className="bg-[#06B6D4] text-white text-sm font-semibold px-6 py-2.5 rounded-xl hover:bg-[#012d70] disabled:opacity-40 transition-all"
               >
                 {saving ? "Adding..." : "Add Policy"}
               </button>
@@ -196,10 +196,10 @@ export default function AtlasPage() {
           )}
 
           {/* Info banner */}
-          <div className="mt-6 bg-[#013B93]/5 border border-[#013B93]/10 rounded-2xl px-6 py-4 flex items-start gap-3">
-            <span className="text-[#013B93] text-lg mt-0.5">ℹ</span>
+          <div className="mt-6 bg-[#06B6D4]/5 border border-[#06B6D4]/10 rounded-2xl px-6 py-4 flex items-start gap-3">
+            <span className="text-[#06B6D4] text-lg mt-0.5">ℹ</span>
             <div>
-              <p className="text-sm font-semibold text-[#013B93]">Policies sync automatically</p>
+              <p className="text-sm font-semibold text-[#06B6D4]">Policies sync automatically</p>
               <p className="text-xs text-slate-500 mt-0.5">
                 Changes made here are pushed to all monitored devices within 60 seconds via the Beacon extension.
                 The extension polls Supabase on each page load and caches policies locally as a fallback.

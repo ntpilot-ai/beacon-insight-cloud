@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
 import { SCHOOL_NAME } from "@/lib/config";
+import Image from "next/image";
 import { useAuth } from "@/lib/useAuth";
 
 interface BeaconEvent {
@@ -89,7 +90,7 @@ export default function SchoolReportPage() {
     <div className="min-h-screen bg-white">
 
       {/* Print controls — hidden when printing */}
-      <div className="print:hidden bg-[#013B93] text-white px-8 py-4 flex items-center justify-between">
+      <div className="print:hidden bg-[#06B6D4] text-white px-8 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <a href="/" className="text-white/70 hover:text-white text-sm">← Back to Dashboard</a>
           <select
@@ -102,7 +103,7 @@ export default function SchoolReportPage() {
         </div>
         <button
           onClick={() => window.print()}
-          className="bg-white text-[#013B93] font-bold px-6 py-2 rounded-xl hover:bg-blue-50 transition-all text-sm"
+          className="bg-white text-[#06B6D4] font-bold px-6 py-2 rounded-xl hover:bg-blue-50 transition-all text-sm"
         >
           ⬇ Download PDF
         </button>
@@ -112,18 +113,18 @@ export default function SchoolReportPage() {
       <div className="max-w-4xl mx-auto px-10 py-10 print:px-8 print:py-6">
 
         {/* Header */}
-        <div className="flex items-start justify-between mb-8 pb-6 border-b-2 border-[#013B93]">
+        <div className="flex items-start justify-between mb-8 pb-6 border-b-2 border-[#06B6D4]">
           <div>
             <div className="flex items-center gap-3 mb-2">
-              <div className="w-10 h-10 rounded-xl bg-[#013B93] flex items-center justify-center">
-                <span className="text-white font-bold text-lg">B</span>
+              <div className="w-10 h-10 rounded-xl bg-[#06B6D4] flex items-center justify-center overflow-hidden p-1">
+                <Image src="/insight_icon.png" alt="Beacon Insight" width={36} height={36} className="object-contain" />
               </div>
               <div>
                 <div className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Beacon Insight</div>
                 <div className="text-xs text-slate-400">Safeguarding Intelligence Platform</div>
               </div>
             </div>
-            <h1 className="text-3xl font-bold text-[#013B93] mt-3">{SCHOOL_NAME}</h1>
+            <h1 className="text-3xl font-bold text-[#06B6D4] mt-3">{SCHOOL_NAME}</h1>
             <h2 className="text-xl text-slate-600 mt-1">Safeguarding Report — {term}</h2>
           </div>
           <div className="text-right text-xs text-slate-400">
@@ -135,7 +136,7 @@ export default function SchoolReportPage() {
         {/* KPI summary */}
         <div className="grid grid-cols-4 gap-4 mb-8">
           {[
-            { label: "Total Prompts",     value: total,    color: "#013B93" },
+            { label: "Total Prompts",     value: total,    color: "#06B6D4" },
             { label: "High Risk",          value: high,     color: "#DC2626" },
             { label: "Medium Risk",        value: medium,   color: "#F59E0B" },
             { label: "Wellbeing Score",    value: wellbeing, color: "#10B981" },
@@ -149,7 +150,7 @@ export default function SchoolReportPage() {
 
         {/* Risk breakdown */}
         <div className="mb-8">
-          <h3 className="text-lg font-bold text-[#013B93] mb-4 pb-2 border-b border-slate-200">Risk Breakdown</h3>
+          <h3 className="text-lg font-bold text-[#06B6D4] mb-4 pb-2 border-b border-slate-200">Risk Breakdown</h3>
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-slate-50">
@@ -183,7 +184,7 @@ export default function SchoolReportPage() {
 
         {/* Platform usage */}
         <div className="mb-8">
-          <h3 className="text-lg font-bold text-[#013B93] mb-4 pb-2 border-b border-slate-200">Platform Usage</h3>
+          <h3 className="text-lg font-bold text-[#06B6D4] mb-4 pb-2 border-b border-slate-200">Platform Usage</h3>
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-slate-50">
@@ -207,7 +208,7 @@ export default function SchoolReportPage() {
         {/* Incident categories */}
         {categories.length > 0 && (
           <div className="mb-8">
-            <h3 className="text-lg font-bold text-[#013B93] mb-4 pb-2 border-b border-slate-200">Incident Categories</h3>
+            <h3 className="text-lg font-bold text-[#06B6D4] mb-4 pb-2 border-b border-slate-200">Incident Categories</h3>
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-slate-50">
@@ -230,7 +231,7 @@ export default function SchoolReportPage() {
         {/* Students of concern */}
         {students.length > 0 && (
           <div className="mb-8">
-            <h3 className="text-lg font-bold text-[#013B93] mb-4 pb-2 border-b border-slate-200">Students of Concern</h3>
+            <h3 className="text-lg font-bold text-[#06B6D4] mb-4 pb-2 border-b border-slate-200">Students of Concern</h3>
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-slate-50">

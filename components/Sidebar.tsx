@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
@@ -24,11 +25,17 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="w-16 min-h-screen bg-[#013B93] flex flex-col items-center py-4 gap-1 shrink-0">
+    <aside className="w-16 min-h-screen bg-[#06B6D4] flex flex-col items-center py-4 gap-1 shrink-0">
 
       {/* Logo */}
-      <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center mb-4">
-        <span className="text-white text-lg font-bold">B</span>
+      <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center mb-4 overflow-hidden p-1">
+        <Image
+          src="/insight_icon.png"
+          alt="Beacon Insight"
+          width={36}
+          height={36}
+          className="object-contain"
+        />
       </div>
 
       {/* Nav items */}

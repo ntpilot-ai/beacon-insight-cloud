@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { SCHOOL_NAME } from "@/lib/config";
+import Image from "next/image";
 import { useAuth } from "@/lib/useAuth";
 
 interface BeaconEvent {
@@ -89,18 +90,18 @@ function StudentReportContent() {
     <div className="min-h-screen bg-white">
 
       {/* Controls — back link only, print button moved to header */}
-      <div className="print:hidden bg-[#013B93] text-white px-8 py-3 flex items-center">
+      <div className="print:hidden bg-[#06B6D4] text-white px-8 py-3 flex items-center">
         <a href="/" className="text-white/70 hover:text-white text-sm">← Back to Dashboard</a>
       </div>
 
       <div className="max-w-4xl mx-auto px-10 py-10 print:px-8 print:py-6">
 
         {/* Header */}
-        <div className="mb-8 pb-6 border-b-2 border-[#013B93]">
+        <div className="mb-8 pb-6 border-b-2 border-[#06B6D4]">
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 rounded-xl bg-[#013B93] flex items-center justify-center">
-                <span className="text-white font-bold text-lg">B</span>
+              <div className="w-10 h-10 rounded-xl bg-[#06B6D4] flex items-center justify-center overflow-hidden p-1">
+                <Image src="/insight_icon.png" alt="Beacon Insight" width={36} height={36} className="object-contain" />
               </div>
               <div>
                 <div className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Beacon Insight</div>
@@ -113,14 +114,14 @@ function StudentReportContent() {
             </div>
           </div>
 
-          <h1 className="text-3xl font-bold text-[#013B93] mb-4">Student Safeguarding Report</h1>
+          <h1 className="text-3xl font-bold text-[#06B6D4] mb-4">Student Safeguarding Report</h1>
 
           {/* Student selector + download — hidden when printing */}
           <div className="print:hidden flex items-center justify-between gap-4">
             <select
               value={selected}
               onChange={e => setSelected(e.target.value)}
-              className="flex-1 max-w-sm border-2 border-[#013B93] rounded-xl px-4 py-2.5 text-slate-700 font-medium bg-white focus:outline-none focus:ring-2 focus:ring-[#013B93]/20 text-sm"
+              className="flex-1 max-w-sm border-2 border-[#06B6D4] rounded-xl px-4 py-2.5 text-slate-700 font-medium bg-white focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20 text-sm"
             >
               <option value="" disabled>Select Student</option>
               {allStudents.map(id => (
@@ -131,7 +132,7 @@ function StudentReportContent() {
             <button
               onClick={() => window.print()}
               disabled={!selected}
-              className="bg-[#013B93] text-white font-bold px-6 py-2.5 rounded-xl hover:bg-[#012d70] disabled:opacity-40 transition-all text-sm flex items-center gap-2"
+              className="bg-[#06B6D4] text-white font-bold px-6 py-2.5 rounded-xl hover:bg-[#012d70] disabled:opacity-40 transition-all text-sm flex items-center gap-2"
             >
               ⬇ Download PDF
             </button>
@@ -144,7 +145,7 @@ function StudentReportContent() {
         {/* Student summary */}
         <div className="grid grid-cols-4 gap-4 mb-8">
           {[
-            { label: "Total Events",    value: studentEvents.length, color: "#013B93" },
+            { label: "Total Events",    value: studentEvents.length, color: "#06B6D4" },
             { label: "High Risk",       value: high,                 color: "#DC2626" },
             { label: "Medium Risk",     value: medium,               color: "#F59E0B" },
             { label: "Blocked",         value: blocked,              color: "#7C3AED" },
@@ -184,7 +185,7 @@ function StudentReportContent() {
         {/* Category breakdown */}
         {Object.keys(categoryMap).length > 0 && (
           <div className="mb-8">
-            <h3 className="text-lg font-bold text-[#013B93] mb-4 pb-2 border-b border-slate-200">Incident Categories</h3>
+            <h3 className="text-lg font-bold text-[#06B6D4] mb-4 pb-2 border-b border-slate-200">Incident Categories</h3>
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-slate-50">
@@ -206,7 +207,7 @@ function StudentReportContent() {
 
         {/* Full incident log */}
         <div className="mb-8">
-          <h3 className="text-lg font-bold text-[#013B93] mb-4 pb-2 border-b border-slate-200">
+          <h3 className="text-lg font-bold text-[#06B6D4] mb-4 pb-2 border-b border-slate-200">
             Full Incident Log ({studentEvents.filter(e => e.risk !== "low").length} flagged events)
           </h3>
           <table className="w-full text-sm">

@@ -3,7 +3,7 @@ interface Props {
 }
 
 const RISK_CONFIG = [
-  { key: "low",      label: "Low Risk",    color: "#013B93" },
+  { key: "low",      label: "Low Risk",    color: "#06B6D4" },
   { key: "medium",   label: "Medium Risk", color: "#F59E0B" },
   { key: "high",     label: "High Risk",   color: "#DC2626" },
   { key: "critical", label: "Critical",    color: "#7C3AED" },
@@ -21,7 +21,7 @@ export default function RiskBreakdown({ events }: Props) {
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
       <div className="flex items-center gap-2 mb-1">
-        <h2 className="text-lg font-bold text-[#013B93]">Risk Breakdown</h2>
+        <h2 className="text-lg font-bold text-[#06B6D4]">Risk Breakdown</h2>
         <span
           title="Risk scores are calculated from prompt content and matched keywords"
           className="w-4 h-4 rounded-full bg-slate-200 text-slate-500 text-[10px] flex items-center justify-center cursor-help shrink-0"

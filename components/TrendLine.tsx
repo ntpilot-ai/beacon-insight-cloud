@@ -129,7 +129,7 @@ export default function TrendLine({ events }: Props) {
               className={`
                 px-4 py-1.5 rounded-full text-sm font-semibold transition-all
                 ${mode === m
-                  ? "bg-[#013B93] text-white shadow-sm"
+                  ? "bg-[#06B6D4] text-white shadow-sm"
                   : "text-slate-500 hover:text-slate-700"}
               `}
             >
@@ -163,9 +163,9 @@ export default function TrendLine({ events }: Props) {
           <Line
             type="monotone"
             dataKey="Prompts"
-            stroke="#013B93"
+            stroke="#06B6D4"
             strokeWidth={2.5}
-            dot={{ r: 4, fill: "#013B93", strokeWidth: 0 }}
+            dot={{ r: 4, fill: "#06B6D4", strokeWidth: 0 }}
             activeDot={{ r: 6 }}
           />
           <Line
