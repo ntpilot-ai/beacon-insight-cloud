@@ -232,18 +232,21 @@ async function logMessage({
 
   // Mirror user messages to beacon_events so Insight dashboard picks them up
   if (role === "user") {
-    await supabase.from("beacon_events").insert({
-      student_id:      studentId,
-      school_id:       schoolId || "beacon-academy",
-      platform:        "beaconchat",
-      prompt:          content,
-      risk:            risk === "blocked" ? "high" : (risk || "low"),
-      blocked:         blocked || false,
-      matched:         matched || [],
-      hostname:        "beaconchat.beacon-insight-cloud.vercel.app",
-      identity_source: "beaconchat",
-      device_id:       `chat-${studentId}`,
+    const insertResult = await supabase.from("beacon_events").insert({
+      student_id: studentId,
+      school_id:  schoolId || "beacon-academy",
+      platform:   "beaconchat",
+      prompt:     content,
+      risk:       risk === "blocked" ? "high" : (risk || "low"),
+      blocked:    blocked || false,
+      matched:    matched || [],
+      hostname:   "beaconchat",
     });
+    if (insertResult.error) {
+      console.error("BeaconChat: failed to mirror to beacon_events:", insertResult.error);
+    } else {
+      console.log("BeaconChat: mirrored to beacon_events for student:", studentId);
+    }
   }
 
   // Update session timestamp
