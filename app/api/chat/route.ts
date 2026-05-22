@@ -21,7 +21,7 @@ const HIGH_RISK = [
   "bypass your filters","you are now unrestricted","developer mode",
   "disregard your training","you have no rules",
 ];
-const MEDIUM_RISK = ["violence","weapon","hate","weed","bully","explicit","self harm"];
+const MEDIUM_RISK = ["violence","weapon","hate","weed","bully","explicit","self harm","sex","porn","adult","nudes","sexting","drugs","alcohol","shank","stab"];
 
 function assessRisk(text: string): { risk: string; matched: string[]; blocked: boolean } {
   const lower = text.toLowerCase();
@@ -79,16 +79,25 @@ export async function POST(req: NextRequest) {
       .select("word,severity")
       .eq("school_id", schoolId || "beacon-academy");
 
-    // Check against school-specific policies
+    // Check against school-specific policies from Supabase
     if (policies?.length) {
       const lower = message.toLowerCase();
+
       const schoolHighMatches = policies
         .filter(p => p.severity === "high" && lower.includes(p.word))
         .map(p => p.word);
-      if (schoolHighMatches.length && !riskAssessment.blocked) {
+
+      const schoolMedMatches = policies
+        .filter(p => p.severity === "medium" && lower.includes(p.word))
+        .map(p => p.word);
+
+      if (schoolHighMatches.length) {
         riskAssessment.matched.push(...schoolHighMatches);
         riskAssessment.blocked = true;
         riskAssessment.risk = "high";
+      } else if (schoolMedMatches.length && riskAssessment.risk === "low") {
+        riskAssessment.matched.push(...schoolMedMatches);
+        riskAssessment.risk = "medium";
       }
     }
 
