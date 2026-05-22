@@ -155,6 +155,13 @@ export async function POST(req: NextRequest) {
       { role: "user", content: message },
     ];
 
+    // Add risk context to system prompt for medium risk prompts
+    const systemPrompt = riskAssessment.risk === "medium"
+      ? SYSTEM_PROMPT + `
+
+Note: This message has been flagged by the school's safeguarding system for containing informal or potentially inappropriate language (matched: ${riskAssessment.matched.join(", ")}). Please respond helpfully but gently encourage the use of appropriate, respectful language where relevant.`
+      : SYSTEM_PROMPT;
+
     const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -163,9 +170,9 @@ export async function POST(req: NextRequest) {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model:      "claude-haiku-4-5-20251001", // or try claude-sonnet-4-5
+        model:      "claude-haiku-4-5-20251001",
         max_tokens: 1024,
-        system:     SYSTEM_PROMPT,
+        system:     systemPrompt,
         messages,
       }),
     });
