@@ -5,7 +5,8 @@ import Link from "next/link";
 import { calculateAllPulses } from "@/lib/pulse_engine";
 
 interface BeaconEvent {
-  student_id: string;
+  id:          number;
+  student_id:  string;
   risk:        string;
   blocked:     boolean;
   created_at:  string;
