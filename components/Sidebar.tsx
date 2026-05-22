@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { icon: "⌂",  label: "Dashboard", href: "/"      },
   { icon: "🛡",  label: "Atlas",     href: "/atlas"  },
   { icon: "📈",  label: "Pulse",     href: "/pulse"  },
+  { icon: "💬",  label: "BeaconChat", href: "/chat/login" },
   { icon: "📊",  label: "Reports",   href: null     },
   { icon: "👤",  label: "Students",  href: null     },
   { icon: "🔔",  label: "Alerts",    href: null     },
