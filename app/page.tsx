@@ -14,6 +14,7 @@ import TrendLine from "@/components/TrendLine";
 import RepeatIncidents from "@/components/RepeatIncidents";
 import PlatformUsage from "@/components/PlatformUsage";
 import BeaconIntelligence from "@/components/AISummary";
+import PulseMini from "@/components/PulseMini";
 
 interface BeaconEvent {
   id: number;
@@ -148,6 +149,8 @@ export default function Dashboard() {
         <main className="flex-1 p-6 overflow-auto">
 
           <BeaconIntelligence events={filteredEvents} schoolName={SCHOOL_NAME} />
+
+          <PulseMini events={filteredEvents} />
 
           <KPIGrid
             totalPrompts={totalPrompts}
