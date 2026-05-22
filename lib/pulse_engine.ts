@@ -123,22 +123,39 @@ function signalEscalation(events: BeaconEvent[], buckets: Record<string, DayBuck
   return { id: "escalation", label: "Risk Escalation", score, weight: 30, detail };
 }
 
-function signalTimeShift(events: BeaconEvent[]): PulseSignal {
-  const outOfHours = events.filter(e => {
-    const h = new Date(e.created_at).getHours();
-    return h < 7 || h > 21;
-  });
+function signalBlockedRate(events: BeaconEvent[]): PulseSignal {
+  const total   = events.length;
+  const blocked = events.filter(e => e.blocked).length;
+  const reBlocked = (() => {
+    // Count cases where a block is followed by another high-risk attempt within 10 minutes
+    const sorted = [...events].sort((a, b) =>
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    );
+    let reAttempts = 0;
+    for (let i = 0; i < sorted.length - 1; i++) {
+      if (sorted[i].blocked) {
+        const next = sorted[i + 1];
+        const gap  = new Date(next.created_at).getTime() - new Date(sorted[i].created_at).getTime();
+        if (gap < 10 * 60 * 1000 && (next.risk === "high" || next.risk === "critical")) {
+          reAttempts++;
+        }
+      }
+    }
+    return reAttempts;
+  })();
 
-  const pct   = outOfHours.length / Math.max(events.length, 1);
-  const score = Math.min(100, Math.round(pct * 150));
+  const blockedPct = blocked / Math.max(total, 1);
+  const score = Math.min(100, Math.round(blockedPct * 120) + reBlocked * 15);
 
-  const detail = pct > 0.5
-    ? `${Math.round(pct * 100)}% of activity is outside school hours — majority late night or early morning`
-    : pct > 0.2
-    ? `${Math.round(pct * 100)}% of activity outside normal hours`
-    : `Activity mostly within normal school hours`;
+  const detail = reBlocked > 2
+    ? `${blocked} prompts blocked — student re-attempted ${reBlocked} times after being blocked`
+    : blocked > 3
+    ? `${blocked} prompts blocked (${Math.round(blockedPct * 100)}% of all activity) — persistent policy violations`
+    : blocked > 0
+    ? `${blocked} prompt${blocked > 1 ? "s" : ""} blocked by safeguarding policies`
+    : `No prompts blocked`;
 
-  return { id: "time_shift", label: "Out-of-Hours Activity", score, weight: 15, detail };
+  return { id: "blocked_rate", label: "Block & Re-attempt Rate", score, weight: 15, detail };
 }
 
 function signalPlatformHopping(events: BeaconEvent[]): PulseSignal {
@@ -220,7 +237,7 @@ export function calculatePulse(studentId: string, events: BeaconEvent[]): Studen
   const signals: PulseSignal[] = [
     signalEscalation(events, buckets),
     signalVelocity(events, buckets),
-    signalTimeShift(events),
+    signalBlockedRate(events),
     signalRepeatTopics(events),
     signalPlatformHopping(events),
     signalSessionIntensity(events),
