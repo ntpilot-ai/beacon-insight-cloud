@@ -157,6 +157,11 @@ export default function ChatPage() {
         }),
       });
 
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        console.error("Chat API error:", res.status, errData);
+        throw new Error(errData.error || `API error ${res.status}`);
+      }
       const data = await res.json();
 
       // Update user message with risk info if blocked
@@ -180,7 +185,8 @@ export default function ChatPage() {
       // Store session ID for subsequent messages
       if (data.sessionId && !sessionId) setSessionId(data.sessionId);
 
-    } catch {
+    } catch (err: any) {
+      console.error("Chat error:", err);
       setMessages(prev => [...prev, {
         id:        Date.now().toString() + "-err",
         role:      "assistant",

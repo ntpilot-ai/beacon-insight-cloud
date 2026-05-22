@@ -6,6 +6,11 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+// Log config on cold start for debugging
+console.log("BeaconChat API init — Supabase URL:", process.env.NEXT_PUBLIC_SUPABASE_URL ? "set" : "MISSING");
+console.log("BeaconChat API init — Anthropic key:", process.env.ANTHROPIC_API_KEY ? "set" : "MISSING");
+console.log("BeaconChat API init — Service key:", process.env.SUPABASE_SERVICE_KEY ? "set" : "using anon key");
+
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY!;
 
 // ── Risk keywords (mirrors Atlas policies) ────────────────────────────────────
@@ -148,7 +153,7 @@ export async function POST(req: NextRequest) {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model:      "claude-haiku-4-5-20251001",
+        model:      "claude-haiku-4-5-20251001", // or try claude-sonnet-4-5
         max_tokens: 1024,
         system:     SYSTEM_PROMPT,
         messages,
@@ -189,7 +194,11 @@ export async function POST(req: NextRequest) {
 
   } catch (err: any) {
     console.error("BeaconChat API error:", err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ 
+      error: err.message,
+      reply: "Sorry, I had trouble connecting. Please try again.",
+      debug: process.env.NODE_ENV === "development" ? err.stack : undefined
+    }, { status: 500 });
   }
 }
 
