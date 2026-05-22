@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
     // ── Step 3: RESOLVE — determine action ───────────────────────────────────
     if (riskAssessment.blocked) {
       // Log the blocked attempt
-      await logMessage({
+      const blockedSid = await logMessage({
         sessionId, studentId, schoolId,
         role: "user",
         content: message,
@@ -111,7 +111,7 @@ export async function POST(req: NextRequest) {
         : "I'm not able to help with that topic. If you're concerned about something, please speak to a trusted teacher or adult. Is there something else I can help you with?";
 
       await logMessage({
-        sessionId, studentId, schoolId,
+        sessionId: blockedSid, studentId, schoolId,
         role: "assistant",
         content: refusal,
         risk: "low",
@@ -125,12 +125,12 @@ export async function POST(req: NextRequest) {
         blocked:   true,
         risk:      "blocked",
         matched:   riskAssessment.matched,
-        sessionId: sid,
+        sessionId: blockedSid,
       });
     }
 
     // ── Step 4: Log the student message ──────────────────────────────────────
-    let sid = await logMessage({
+    const sid = await logMessage({
       sessionId, studentId, schoolId,
       role: "user",
       content: message,
@@ -260,5 +260,3 @@ async function logMessage({
 
   return sid;
 }
-
-let sid: string | null = null;
