@@ -15,6 +15,8 @@ interface Props {
 const COLORS = ["#06B6D4", "#10B981", "#F59E0B", "#DC2626", "#8B5CF6", "#0EA5E9"];
 
 const PLATFORM_LABELS: Record<string, string> = {
+  "beaconchat":                    "BeaconChat",
+  "beaconchat.beacon-insight-cloud.vercel.app": "BeaconChat",
   "chatgpt.com":            "ChatGPT",
   "chat.openai.com":        "ChatGPT",
   "claude.ai":              "Claude",

@@ -230,6 +230,22 @@ async function logMessage({
     tokens_used: tokensUsed || null,
   });
 
+  // Mirror user messages to beacon_events so Insight dashboard picks them up
+  if (role === "user") {
+    await supabase.from("beacon_events").insert({
+      student_id:      studentId,
+      school_id:       schoolId || "beacon-academy",
+      platform:        "beaconchat",
+      prompt:          content,
+      risk:            risk === "blocked" ? "high" : (risk || "low"),
+      blocked:         blocked || false,
+      matched:         matched || [],
+      hostname:        "beaconchat.beacon-insight-cloud.vercel.app",
+      identity_source: "beaconchat",
+      device_id:       `chat-${studentId}`,
+    });
+  }
+
   // Update session timestamp
   if (sid) {
     await supabase.from("chat_sessions")
