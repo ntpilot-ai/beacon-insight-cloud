@@ -130,7 +130,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Step 4: Log the student message ──────────────────────────────────────
-    const sid = await logMessage({
+    let sid = await logMessage({
       sessionId, studentId, schoolId,
       role: "user",
       content: message,
