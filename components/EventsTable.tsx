@@ -103,7 +103,7 @@ function StudentRow({ studentId, events }: { studentId: string; events: BeaconEv
         </td>
         <td className="py-3 pr-4 text-slate-500 text-sm">
                   <div className="flex items-center gap-2 flex-wrap">
-                    {studentEvents[0]?.platform === "beaconchat" && (
+                    {events.some((e: any) => e.platform === "beaconchat") && (
                       <span className="text-[10px] font-bold bg-cyan-100 text-cyan-700 px-1.5 py-0.5 rounded-full">BeaconChat</span>
                     )}
                     <span>{categories.slice(0, 2).join(", ")}{categories.length > 2 ? ` +${categories.length - 2}` : ""}</span>
