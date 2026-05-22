@@ -121,15 +121,16 @@ export async function POST(req: NextRequest) {
       });
 
       return NextResponse.json({
-        reply:   refusal,
-        blocked: true,
-        risk:    "blocked",
-        matched: riskAssessment.matched,
+        reply:     refusal,
+        blocked:   true,
+        risk:      "blocked",
+        matched:   riskAssessment.matched,
+        sessionId: sid,
       });
     }
 
     // ── Step 4: Log the student message ──────────────────────────────────────
-    await logMessage({
+    let sid = await logMessage({
       sessionId, studentId, schoolId,
       role: "user",
       content: message,
@@ -172,7 +173,7 @@ export async function POST(req: NextRequest) {
     const responseRisk = assessRisk(reply);
 
     // ── Step 7: Log assistant response ───────────────────────────────────────
-    await logMessage({
+    sid = await logMessage({
       sessionId, studentId, schoolId,
       role: "assistant",
       content: reply,
@@ -186,10 +187,11 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       reply,
-      blocked:  false,
-      risk:     riskAssessment.risk,
-      matched:  riskAssessment.matched,
+      blocked:   false,
+      risk:      riskAssessment.risk,
+      matched:   riskAssessment.matched,
       tokens,
+      sessionId: sid,
     });
 
   } catch (err: any) {
@@ -258,3 +260,5 @@ async function logMessage({
 
   return sid;
 }
+
+let sid: string | null = null;

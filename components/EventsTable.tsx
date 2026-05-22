@@ -13,16 +13,31 @@ interface BeaconEvent {
   matched: string[];
 }
 
-function categoryFromMatched(matched: string[]): string {
+function categoryFromMatched(matched: string[], platform?: string): string {
+  // Jailbreak detection
+  if (matched?.some(m =>
+    ["jailbreak","ignore previous","act as dan","bypass","developer mode",
+     "pretend you have no","do anything now","disregard"].some(j => m.toLowerCase().includes(j))
+  )) return "Jailbreak Attempt";
   if (!matched?.length) return "General";
   const m = matched.join(" ").toLowerCase();
   if (m.includes("harm") || m.includes("hurt") || m.includes("suicide")) return "Self-harm";
   if (m.includes("bully") || m.includes("threaten")) return "Bullying";
   if (m.includes("weapon") || m.includes("violen")) return "Violence";
   if (m.includes("sex") || m.includes("explicit") || m.includes("adult")) return "Inappropriate Content";
-  if (m.includes("drug") || m.includes("alcohol")) return "Substance";
+  if (m.includes("drug") || m.includes("alcohol") || m.includes("weed")) return "Substance";
   if (m.includes("essay") || m.includes("homework") || m.includes("write")) return "Academic Integrity";
   return "General";
+}
+
+function platformLabel(platform?: string): string {
+  if (!platform) return "";
+  if (platform === "beaconchat") return "BeaconChat";
+  if (platform.includes("chatgpt") || platform.includes("openai")) return "ChatGPT";
+  if (platform.includes("claude")) return "Claude";
+  if (platform.includes("gemini")) return "Gemini";
+  if (platform.includes("copilot")) return "Copilot";
+  return platform;
 }
 
 const RISK_ORDER: Record<string, number> = {
@@ -86,7 +101,14 @@ function StudentRow({ studentId, events }: { studentId: string; events: BeaconEv
             <span className="font-medium text-slate-700">{studentId}</span>
           </div>
         </td>
-        <td className="py-3 pr-4 text-slate-500 text-sm">{categories.slice(0, 2).join(", ")}{categories.length > 2 ? ` +${categories.length - 2}` : ""}</td>
+        <td className="py-3 pr-4 text-slate-500 text-sm">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {studentEvents[0]?.platform === "beaconchat" && (
+                      <span className="text-[10px] font-bold bg-cyan-100 text-cyan-700 px-1.5 py-0.5 rounded-full">BeaconChat</span>
+                    )}
+                    <span>{categories.slice(0, 2).join(", ")}{categories.length > 2 ? ` +${categories.length - 2}` : ""}</span>
+                  </div>
+                </td>
         <td className="py-3 pr-4"><SeverityBadge risk={topRisk} /></td>
         <td className="py-3 pr-4"><StatusBadge risk={topRisk} /></td>
         <td className="py-3 text-right">
