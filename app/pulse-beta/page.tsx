@@ -104,7 +104,7 @@ function StudentDetail({ pulse, events }: { pulse: StudentPulse; events: any[] }
           </div>
         </div>
 
-        {/* ── Concern categories — prominent ── */}
+        {/* ── Concern categories + primary concern ── */}
         {pulse.categories.length > 0 && (
           <div className="flex flex-wrap gap-2 mt-4">
             {pulse.categories.map(cat => (
@@ -116,17 +116,20 @@ function StudentDetail({ pulse, events }: { pulse: StudentPulse; events: any[] }
             ))}
           </div>
         )}
+
+        {/* Primary concern inline */}
+        <div className="mt-3 flex items-start gap-2">
+          <div className="w-1 rounded-full self-stretch shrink-0" style={{ background: alert.bar }} />
+          <div>
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Primary Concern · </span>
+            <span className="text-sm font-bold text-slate-700">{pulse.dominant_signal.label}</span>
+            <span className="text-sm text-slate-500"> — {pulse.dominant_signal.detail}</span>
+          </div>
+        </div>
       </div>
 
       {/* ── Body ── */}
       <div className="flex-1 p-6 space-y-6 overflow-auto">
-
-        {/* Primary concern */}
-        <div className="rounded-2xl p-4 border-l-4" style={{ borderLeftColor: alert.bar, background: alert.light }}>
-          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Primary Concern</div>
-          <div className="font-bold text-slate-800">{pulse.dominant_signal.label}</div>
-          <div className="text-sm text-slate-600 mt-0.5 leading-relaxed">{pulse.dominant_signal.detail}</div>
-        </div>
 
         {/* Timeline + signals side by side */}
         <div className="grid grid-cols-[1fr_1fr] gap-5">
