@@ -295,6 +295,13 @@ export default function PulsePage() {
           <div className="flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-full bg-cyan-50 text-[#06B6D4]">
             <span className="w-1.5 h-1.5 rounded-full bg-[#06B6D4] animate-pulse" />
             {pulses.length} students monitored
+            </div>
+            <Link
+              href="/pulse-beta"
+              className="text-xs font-semibold text-slate-500 border border-slate-200 px-4 py-2 rounded-xl hover:border-[#06B6D4] hover:text-[#06B6D4] transition-all"
+            >
+              Try Beta Version →
+            </Link>
           </div>
         </header>
 
