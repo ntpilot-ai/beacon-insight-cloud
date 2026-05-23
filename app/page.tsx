@@ -9,7 +9,6 @@ import Sidebar from "@/components/Sidebar";
 import KPIGrid from "@/components/KPIGrid";
 import EventsTable from "@/components/EventsTable";
 import RiskBreakdown from "@/components/RiskBreakdown";
-import QuickActions from "@/components/QuickActions";
 import TrendLine from "@/components/TrendLine";
 import RepeatIncidents from "@/components/RepeatIncidents";
 import PlatformUsage from "@/components/PlatformUsage";
@@ -188,7 +187,6 @@ export default function Dashboard() {
             <EventsTable events={filteredEvents} />
             <div className="flex flex-col gap-5">
               <RiskBreakdown events={filteredEvents} />
-              <QuickActions />
             </div>
           </div>
 
