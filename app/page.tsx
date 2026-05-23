@@ -115,11 +115,21 @@ export default function Dashboard() {
         {/* Top bar */}
         <header className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between shrink-0">
           <div>
-            <h1 className="text-2xl font-bold text-[#06B6D4]">{SCHOOL_NAME} — Insight Dashboard</h1>
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-bold text-[#06B6D4]">{SCHOOL_NAME} — Insight Dashboard</h1>
+              <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700">Release</span>
+            </div>
             <p className="text-sm text-slate-400 mt-0.5">Teacher safeguarding, wellbeing and engagement overview</p>
           </div>
 
           <div className="flex items-center gap-3">
+            <a
+              href="/dashboard-beta"
+              className="text-xs font-semibold text-slate-500 border border-slate-200 px-4 py-2 rounded-xl hover:border-[#06B6D4] hover:text-[#06B6D4] transition-all"
+            >
+              Try Beta Version →
+            </a>
+
             <select
               value={term}
               onChange={e => setTerm(e.target.value)}
