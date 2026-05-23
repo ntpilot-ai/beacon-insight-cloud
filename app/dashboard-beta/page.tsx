@@ -8,6 +8,7 @@ import { calculateAllPulses } from "@/lib/pulse_engine";
 import Sidebar from "@/components/Sidebar";
 import BeaconIntelligence from "@/components/AISummary";
 import Link from "next/link";
+import TrendLine from "@/components/TrendLine";
 
 interface BeaconEvent {
   id:         number;
@@ -194,63 +195,6 @@ function TodayPanel({ events, pulses }: { events: BeaconEvent[]; pulses: any[] }
 }
 
 // ── Collapsible overview ──────────────────────────────────────────────────────
-// ── Activity Trend ────────────────────────────────────────────────────────────
-function ActivityTrend({ events }: { events: BeaconEvent[] }) {
-  const days = Array.from({ length: 14 }, (_, i) => {
-    const d = new Date();
-    d.setDate(d.getDate() - (13 - i));
-    const key = d.toISOString().slice(0, 10);
-    const label = d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-    const dayEvents = events.filter(e => e.created_at.slice(0, 10) === key);
-    return {
-      key, label,
-      total:   dayEvents.length,
-      alerts:  dayEvents.filter(e => e.risk === "high" || e.risk === "critical" || e.risk === "medium").length,
-      blocked: dayEvents.filter(e => e.blocked).length,
-    };
-  });
-
-  const maxTotal = Math.max(...days.map(d => d.total), 1);
-
-  return (
-    <div className="bg-slate-50 rounded-2xl p-4">
-      <div className="flex items-end gap-1 h-24 mb-2">
-        {days.map((day, i) => (
-          <div key={i} className="flex-1 flex flex-col items-center gap-0.5 group relative">
-            {/* Stacked bars: total (cyan), alerts (amber), blocked (red) */}
-            <div className="w-full flex flex-col-reverse gap-px" style={{ height: `${Math.max((day.total / maxTotal) * 88, day.total > 0 ? 4 : 0)}px` }}>
-              <div className="w-full rounded-sm" style={{ flex: Math.max(day.total - day.alerts, 0), background: "#06B6D4", minHeight: day.total > day.alerts ? 2 : 0 }} />
-              <div className="w-full rounded-sm" style={{ flex: Math.max(day.alerts - day.blocked, 0), background: "#F59E0B", minHeight: day.alerts > day.blocked ? 2 : 0 }} />
-              <div className="w-full rounded-sm" style={{ flex: day.blocked, background: "#DC2626", minHeight: day.blocked > 0 ? 2 : 0 }} />
-            </div>
-            {/* Tooltip */}
-            <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[9px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 whitespace-nowrap pointer-events-none z-10">
-              {day.label}: {day.total} prompts · {day.alerts} alerts · {day.blocked} blocked
-            </div>
-          </div>
-        ))}
-      </div>
-      <div className="flex justify-between text-[9px] text-slate-400">
-        <span>{days[0].label}</span>
-        <span>{days[Math.floor(days.length / 2)].label}</span>
-        <span>{days[days.length - 1].label}</span>
-      </div>
-      <div className="flex items-center gap-4 mt-2">
-        {[
-          { color: "#06B6D4", label: "Prompts" },
-          { color: "#F59E0B", label: "Alerts"  },
-          { color: "#DC2626", label: "Blocked" },
-        ].map(l => (
-          <div key={l.label} className="flex items-center gap-1">
-            <div className="w-2 h-2 rounded-sm" style={{ background: l.color }} />
-            <span className="text-[10px] text-slate-400">{l.label}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function OverviewSection({ events, term, setTerm }: {
   events: BeaconEvent[]; term: string; setTerm: (t: string) => void;
 }) {
@@ -306,8 +250,8 @@ function OverviewSection({ events, term, setTerm }: {
 
           {/* Activity trend chart */}
           <div className="mb-6">
-            <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Activity Trend — Last 14 Days</div>
-            <ActivityTrend events={events} />
+            <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Activity Trend</div>
+            <TrendLine events={events} />
           </div>
 
           {/* Risk breakdown + Platform side by side */}
