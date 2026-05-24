@@ -7,21 +7,11 @@ import Sidebar from "@/components/Sidebar";
 import Image from "next/image";
 import Link from "next/link";
 import { calculateAllPulsesV2, type StudentPulse } from "@/lib/pulse_engine_v2";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 
-// ── Sparkline ─────────────────────────────────────────────────────────────────
-function Sparkline({ data, color, width = 56, height = 20 }: { data: number[]; color: string; width?: number; height?: number }) {
-  const max    = Math.max(...data, 1);
-  const points = data.map((v, i) => `${(i / (data.length - 1)) * width},${height - (v / max) * height}`).join(" ");
-  return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-      <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
-      <circle cx={width} cy={height - (data[data.length-1] / max) * height} r="2.5" fill={color} />
-    </svg>
-  );
-}
 
 const ALERT = {
-  critical: { label: "Critical", bg: "bg-purple-100", text: "text-purple-700", bar: "#7C3AED", light: "#F5F3FF", ring: "ring-purple-300" },
+  critical: { label: "Critical", bg: "bg-indigo-100", text: "text-indigo-700", bar: "#4F46E5", light: "#EEF2FF", ring: "ring-indigo-300" },
   high:     { label: "High",     bg: "bg-red-100",    text: "text-red-600",    bar: "#DC2626", light: "#FEF2F2", ring: "ring-red-300"    },
   medium:   { label: "Medium",   bg: "bg-amber-100",  text: "text-amber-700",  bar: "#F59E0B", light: "#FFFBEB", ring: "ring-amber-300"  },
   low:      { label: "Low",      bg: "bg-slate-100",  text: "text-slate-500",  bar: "#10B981", light: "#F0FDF4", ring: "ring-slate-200"  },
@@ -51,6 +41,74 @@ const CAT_COLOR: Record<string, string> = {
   "General":               "#64748b",
 };
 
+const RISK_GROUP_CONFIG = {
+  high:   { label: "HIGH RISK",   badge: "bg-red-100 text-red-600",    bar: "#DC2626", border: "border-red-200"   },
+  medium: { label: "MEDIUM RISK", badge: "bg-amber-100 text-amber-700", bar: "#F59E0B", border: "border-amber-200" },
+  low:    { label: "LOW RISK",    badge: "bg-slate-100 text-slate-500", bar: "#10B981", border: "border-slate-200" },
+};
+
+function RiskGroup({ riskKey, events }: { riskKey: "high" | "medium" | "low"; events: any[] }) {
+  const [open, setOpen] = useState(false);
+  const cfg = RISK_GROUP_CONFIG[riskKey];
+  if (events.length === 0) return null;
+  const latest = events[0];
+  const preview = latest.prompt?.slice(0, 60) + (latest.prompt?.length > 60 ? "…" : "");
+  const latestDate = new Date(latest.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const latestTime = new Date(latest.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  const rc = riskKey === "high" ? "#DC2626" : riskKey === "medium" ? "#F59E0B" : "#10B981";
+
+  return (
+    <div className="rounded-xl overflow-hidden border border-slate-100">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-3 px-4 py-3 bg-slate-50 hover:bg-slate-100 transition-colors text-left"
+      >
+        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${cfg.badge}`}>
+          {cfg.label}
+        </span>
+        <span className="text-xs font-semibold text-slate-500 shrink-0">{events.length} prompt{events.length !== 1 ? "s" : ""}</span>
+        <span className="flex-1 text-xs text-slate-400 truncate min-w-0">
+          {preview}
+        </span>
+        <span className="text-[10px] text-slate-400 shrink-0">{latestDate} {latestTime}</span>
+        <svg
+          className="shrink-0 transition-transform duration-200"
+          style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
+          width="12" height="12" viewBox="0 0 12 12" fill="none"
+        >
+          <path d="M2 4l4 4 4-4" stroke="#94a3b8" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="divide-y divide-slate-50">
+          {events.map((event: any, idx: number) => {
+            return (
+              <div key={idx} className="flex gap-3 p-3 border-l-2 bg-white" style={{ borderLeftColor: rc }}>
+                <div className="shrink-0 w-16 text-right">
+                  <div className="text-[10px] text-slate-400">{new Date(event.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</div>
+                  <div className="text-[10px] text-slate-400">{new Date(event.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</div>
+                  <div className="text-[10px] font-bold mt-0.5" style={{ color: rc }}>{event.risk?.toUpperCase()}</div>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-slate-700 leading-relaxed">{event.prompt}</p>
+                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                    <span className="text-[10px] text-slate-400">{event.platform}</span>
+                    {event.matched?.map((m: string, i: number) => (
+                      <span key={`${m}-${i}`} className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-mono">{m}</span>
+                    ))}
+                    {event.blocked && <span className="text-[10px] font-bold text-red-600 bg-red-50 px-1.5 py-0.5 rounded-full">Blocked</span>}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Student detail ────────────────────────────────────────────────────────────
 function StudentDetail({ pulse, events }: { pulse: StudentPulse; events: any[] }) {
   const alert = ALERT[pulse.alert_level];
@@ -61,6 +119,40 @@ function StudentDetail({ pulse, events }: { pulse: StudentPulse; events: any[] }
       .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
     [events, pulse.student_id]
   );
+
+  const chartData = useMemo(() =>
+    Array.from({ length: 14 }, (_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (13 - i));
+      const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+      const dayEnd   = dayStart + 86400000;
+      const day = studentEvents.filter((e: any) => {
+        const t = new Date(e.created_at).getTime();
+        return t >= dayStart && t < dayEnd;
+      });
+      return {
+        date:     d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
+        critical: day.filter((e: any) => e.risk === "critical").length,
+        high:     day.filter((e: any) => e.risk === "high").length,
+        medium:   day.filter((e: any) => e.risk === "medium").length,
+        low:      day.filter((e: any) => e.risk === "low").length,
+      };
+    }),
+    [studentEvents]
+  );
+
+  const hasRisk = useMemo(() => ({
+    critical: studentEvents.some((e: any) => e.risk === "critical"),
+    high:     studentEvents.some((e: any) => e.risk === "high"),
+    medium:   studentEvents.some((e: any) => e.risk === "medium"),
+    low:      studentEvents.some((e: any) => e.risk === "low"),
+  }), [studentEvents]);
+
+  const groupedEvents = useMemo(() => ({
+    high:   studentEvents.filter((e: any) => e.risk === "high" || e.risk === "critical"),
+    medium: studentEvents.filter((e: any) => e.risk === "medium"),
+    low:    studentEvents.filter((e: any) => e.risk === "low"),
+  }), [studentEvents]);
 
   return (
     <div className="flex flex-col h-full overflow-auto">
@@ -139,26 +231,28 @@ function StudentDetail({ pulse, events }: { pulse: StudentPulse; events: any[] }
             <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-3">
               14-Day Timeline · {SHAPE_ICON[pulse.trend_shape]} {pulse.trend_shape.replace("_", " ")}
             </div>
-            <div className="flex items-end gap-1 h-16">
-              {pulse.trend.map((v, i) => {
-                const max   = Math.max(...pulse.trend, 1);
-                const color = v >= 70 ? "#DC2626" : v >= 40 ? "#F59E0B" : v > 0 ? "#06B6D4" : "#e2e8f0";
-                return (
-                  <div key={i} className="flex-1 rounded-t-sm transition-all"
-                    style={{ height: `${Math.max((v / max) * 64, 2)}px`, background: color }} />
-                );
-              })}
-            </div>
-            <div className="flex justify-between text-[9px] text-slate-400 mt-1">
-              <span>14d ago</span><span>Today</span>
-            </div>
+            <ResponsiveContainer width="100%" height={180}>
+              <LineChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -28 }}>
+                <XAxis dataKey="date" tick={{ fontSize: 9, fill: "#94a3b8" }} tickLine={false} axisLine={false} interval={6} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 9, fill: "#94a3b8" }} tickLine={false} axisLine={false} />
+                <Tooltip
+                  contentStyle={{ fontSize: 11, borderRadius: 8, border: "1px solid #e2e8f0", padding: "6px 10px" }}
+                  labelStyle={{ fontWeight: 700, marginBottom: 4, color: "#334155" }}
+                  itemStyle={{ padding: "1px 0" }}
+                />
+                {hasRisk.critical && <Line type="monotone" dataKey="critical" stroke="#6366F1" strokeWidth={2} dot={false} name="Critical" />}
+                {hasRisk.high     && <Line type="monotone" dataKey="high"     stroke="#EF4444" strokeWidth={2} dot={false} name="High"     />}
+                {hasRisk.medium   && <Line type="monotone" dataKey="medium"   stroke="#EAB308" strokeWidth={2} dot={false} name="Medium"   />}
+                {hasRisk.low      && <Line type="monotone" dataKey="low"      stroke="#22C55E" strokeWidth={2} dot={false} name="Low"      />}
+              </LineChart>
+            </ResponsiveContainer>
           </div>
 
           {/* Signal bars — compact */}
           <div className="bg-slate-50 rounded-2xl p-4">
             <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-3">Signal Breakdown</div>
             <div className="space-y-2.5">
-              {pulse.signals.sort((a, b) => b.score - a.score).map(sig => {
+              {pulse.signals.map(sig => {
                 const c = sig.score >= 70 ? "#DC2626" : sig.score >= 40 ? "#F59E0B" : "#10B981";
                 return (
                   <div key={sig.id} className="flex items-center gap-2">
@@ -187,29 +281,12 @@ function StudentDetail({ pulse, events }: { pulse: StudentPulse; events: any[] }
             </button>
           </div>
           <div className="space-y-2">
-            {studentEvents.filter((e: any) => e.risk !== "low").map((event: any, idx: number) => {
-              const rc = event.risk === "high" || event.risk === "critical" ? "#DC2626" : "#F59E0B";
-              const bc = event.risk === "high" || event.risk === "critical" ? "border-red-200" : "border-amber-200";
-              return (
-                <div key={idx} className={`flex gap-3 p-3 rounded-xl border ${bc} bg-white`}>
-                  <div className="shrink-0 w-16 text-right">
-                    <div className="text-[10px] text-slate-400">{new Date(event.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</div>
-                    <div className="text-[10px] text-slate-400">{new Date(event.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</div>
-                    <div className="text-[10px] font-bold mt-0.5" style={{ color: rc }}>{event.risk?.toUpperCase()}</div>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-slate-700 leading-relaxed">{event.prompt}</p>
-                    <div className="flex items-center gap-2 mt-1 flex-wrap">
-                      <span className="text-[10px] text-slate-400">{event.platform}</span>
-                      {event.matched?.map((m: string) => (
-                        <span key={m} className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-mono">{m}</span>
-                      ))}
-                      {event.blocked && <span className="text-[10px] font-bold text-red-600 bg-red-50 px-1.5 py-0.5 rounded-full">Blocked</span>}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+            <RiskGroup riskKey="high"   events={groupedEvents.high}   />
+            <RiskGroup riskKey="medium" events={groupedEvents.medium} />
+            <RiskGroup riskKey="low"    events={groupedEvents.low}    />
+            {studentEvents.length === 0 && (
+              <div className="text-sm text-slate-400 text-center py-6">No events found</div>
+            )}
           </div>
         </div>
 
@@ -221,48 +298,20 @@ function StudentDetail({ pulse, events }: { pulse: StudentPulse; events: any[] }
 // ── Student list item ─────────────────────────────────────────────────────────
 function StudentListItem({ pulse, isActive, onClick }: { pulse: StudentPulse; isActive: boolean; onClick: () => void }) {
   const alert = ALERT[pulse.alert_level];
-  const trend = TREND_DIR[pulse.trend_direction];
 
   return (
     <button onClick={onClick}
-      className={`w-full text-left px-4 py-3.5 border-b border-slate-50 transition-colors ${
+      className={`w-full text-left px-4 py-2.5 border-b border-slate-50 transition-colors flex items-center gap-2 ${
         isActive ? "bg-cyan-50 border-l-2 border-l-[#06B6D4]" : "hover:bg-slate-50"
       }`}>
-
-      <div className="flex items-center justify-between mb-1">
-        <div className="flex items-center gap-1.5 min-w-0">
-          {pulse.rapid_escalation && <span className="text-xs shrink-0">⚡</span>}
-          <span className="font-semibold text-slate-700 text-sm truncate">{pulse.student_id}</span>
-        </div>
-        <span className={`text-xs font-bold px-2 py-0.5 rounded-full shrink-0 ml-2 ${alert.bg} ${alert.text}`}>
-          {pulse.pulse_score}
-        </span>
+      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: alert.bar }} />
+      <div className="flex items-center gap-1 min-w-0 flex-1">
+        {pulse.rapid_escalation && <span className="text-xs shrink-0">⚡</span>}
+        <span className="font-medium text-slate-700 text-sm truncate">{pulse.student_id}</span>
       </div>
-
-      {/* Categories — top concern only */}
-      {pulse.categories.length > 0 && (
-        <div className="flex items-center gap-1.5 mb-1.5">
-          <span className="text-[10px] font-bold text-white px-2 py-0.5 rounded-full"
-            style={{ background: CAT_COLOR[pulse.categories[0].name] || "#64748b" }}>
-            {pulse.categories[0].name}
-          </span>
-          {pulse.categories.length > 1 && (
-            <span className="text-[10px] text-slate-400">+{pulse.categories.length - 1} more</span>
-          )}
-        </div>
-      )}
-
-      <div className="flex items-center justify-between">
-        <span className={`text-[10px] font-semibold ${trend.color}`}>
-          {trend.icon} {pulse.trend_direction}
-          {pulse.vs_school_avg !== undefined && Math.abs(pulse.vs_school_avg) >= 15 && (
-            <span className={`ml-1.5 ${pulse.vs_school_avg > 0 ? "text-red-400" : "text-emerald-400"}`}>
-              ({pulse.vs_school_avg > 0 ? "+" : ""}{pulse.vs_school_avg} avg)
-            </span>
-          )}
-        </span>
-        <Sparkline data={pulse.trend} color={alert.bar} />
-      </div>
+      <span className={`text-xs font-bold px-2 py-0.5 rounded-full shrink-0 ${alert.bg} ${alert.text}`}>
+        {pulse.pulse_score}
+      </span>
     </button>
   );
 }
@@ -273,8 +322,8 @@ export default function PulseBetaPage() {
   const [events, setEvents]     = useState<any[]>([]);
   const [loading, setLoading]   = useState(true);
   const [selected, setSelected] = useState<StudentPulse | null>(null);
-  const [filter, setFilter]     = useState<"all" | "critical" | "high" | "medium" | "low">("all");
   const [search, setSearch]     = useState("");
+  const [openTiers, setOpenTiers] = useState<Record<string, boolean>>({ critical: true, high: false, medium: false, low: false });
 
   useEffect(() => {
     supabase.from("beacon_events").select("*").order("created_at", { ascending: true })
@@ -287,21 +336,21 @@ export default function PulseBetaPage() {
     if (pulses.length && !selected) setSelected(pulses[0]);
   }, [pulses]);
 
-  const filtered = useMemo(() => pulses.filter(p => {
-    if (filter !== "all" && p.alert_level !== filter) return false;
-    if (search && !p.student_id.toLowerCase().includes(search.toLowerCase())) return false;
-    return true;
-  }), [pulses, filter, search]);
+  const filtered = useMemo(() =>
+    pulses.filter(p => !search || p.student_id.toLowerCase().includes(search.toLowerCase())),
+    [pulses, search]
+  );
 
   const schoolAvg  = useMemo(() =>
     pulses.length ? Math.round(pulses.reduce((s, p) => s + p.pulse_score, 0) / pulses.length) : 0, [pulses]);
   const rapidCount = pulses.filter(p => p.rapid_escalation).length;
-  const summary    = {
-    critical: pulses.filter(p => p.alert_level === "critical").length,
-    high:     pulses.filter(p => p.alert_level === "high").length,
-    medium:   pulses.filter(p => p.alert_level === "medium").length,
-    low:      pulses.filter(p => p.alert_level === "low").length,
-  };
+
+  const TIERS = [
+    { key: "critical" as const, label: "Critical" },
+    { key: "high"     as const, label: "High"     },
+    { key: "medium"   as const, label: "Medium"   },
+    { key: "low"      as const, label: "Low"      },
+  ];
 
   if (authLoading || !authenticated) return null;
 
@@ -333,42 +382,48 @@ export default function PulseBetaPage() {
           </Link>
         </header>
 
-        {/* Filter bar */}
-        <div className="bg-white border-b border-slate-100 px-6 py-2 flex items-center gap-2">
-          {(["all","critical","high","medium","low"] as const).map(level => {
-            const count = level === "all" ? pulses.length : summary[level];
-            const cfg   = level === "all"
-              ? { label: "All", bg: "bg-slate-100", text: "text-slate-600", bar: "#64748b" }
-              : ALERT[level];
-            return (
-              <button key={level} onClick={() => setFilter(level)}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold transition-all ${
-                  filter === level ? `${cfg.bg} ${cfg.text}` : "text-slate-400 hover:bg-slate-100"
-                }`}>
-                {level !== "all" && <span className="w-1.5 h-1.5 rounded-full" style={{ background: cfg.bar }} />}
-                {cfg.label} {count}
-              </button>
-            );
-          })}
+        {/* Search bar */}
+        <div className="bg-white border-b border-slate-100 px-4 py-2 flex items-center shrink-0">
           <input type="text" value={search} onChange={e => setSearch(e.target.value)}
-            placeholder="Search..."
-            className="ml-auto border border-slate-200 rounded-xl px-3 py-1 text-xs w-36 focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20" />
+            placeholder="Search students..."
+            className="w-full border border-slate-200 rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20" />
         </div>
 
         {/* Split view */}
         <div className="flex flex-1 min-h-0 overflow-hidden">
 
-          {/* Left list — narrower */}
-          <div className="w-60 shrink-0 bg-white border-r border-slate-200 overflow-auto">
+          {/* Left list — grouped by tier */}
+          <div className="w-56 shrink-0 bg-white border-r border-slate-200 overflow-auto">
             {loading && <div className="text-center py-8 text-slate-400 text-xs">Loading...</div>}
-            {!loading && filtered.map(pulse => (
-              <StudentListItem
-                key={pulse.student_id}
-                pulse={pulse}
-                isActive={selected?.student_id === pulse.student_id}
-                onClick={() => setSelected(pulse)}
-              />
-            ))}
+            {!loading && TIERS.map(tier => {
+              const group = filtered.filter(p => p.alert_level === tier.key);
+              if (group.length === 0) return null;
+              const open = !!openTiers[tier.key];
+              return (
+                <div key={tier.key}>
+                  <button
+                    onClick={() => setOpenTiers(prev => ({ ...prev, [tier.key]: !prev[tier.key] }))}
+                    className="sticky top-0 z-10 w-full bg-slate-50 border-b border-slate-100 px-4 py-1.5 flex items-center gap-1.5 hover:bg-slate-100 transition-colors"
+                  >
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: ALERT[tier.key].bar }} />
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">{tier.label}</span>
+                    <span className="ml-auto text-[10px] font-bold text-slate-400 mr-1">{group.length}</span>
+                    <svg className="shrink-0 transition-transform duration-200" style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
+                      width="10" height="10" viewBox="0 0 10 10" fill="none">
+                      <path d="M2 3.5l3 3 3-3" stroke="#94a3b8" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </button>
+                  {open && group.map(pulse => (
+                    <StudentListItem
+                      key={pulse.student_id}
+                      pulse={pulse}
+                      isActive={selected?.student_id === pulse.student_id}
+                      onClick={() => setSelected(pulse)}
+                    />
+                  ))}
+                </div>
+              );
+            })}
           </div>
 
           {/* Right detail */}
