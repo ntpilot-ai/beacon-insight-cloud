@@ -32,8 +32,8 @@ app/
   page.tsx                    — Release dashboard (3 KPIs, today triage, collapsible term overview)
   dashboard-beta/page.tsx     — Beta dashboard (sandbox for next iteration; starts as copy of release)
   atlas/page.tsx              — Policy management
-  pulse/page.tsx              — Release Pulse (v1 engine)
-  pulse-beta/page.tsx         — Beta Pulse (v2 engine)
+  pulse/page.tsx              — Release Pulse (recency-weighted multi-signal engine)
+  pulse-beta/page.tsx         — Beta Pulse (sandbox for next iteration; starts as copy of release)
   chat/page.tsx               — BeaconChat UI with session sidebar
   chat/login/page.tsx         — Student login (demo code: beacon2026)
   blocked/page.tsx            — Period mode redirect page
@@ -61,8 +61,7 @@ lib/
   supabase.ts                 — Supabase client
   config.ts                   — SCHOOL_ID, SCHOOL_NAME from env
   useAuth.ts                  — Client-side auth hook
-  pulse_engine.ts             — Pulse v1 (6 signals)
-  pulse_engine_v2.ts          — Pulse v2 (recency weighting, rapid escalation, school baseline, trend shape, category clustering)
+  pulse_engine.ts             — Pulse engine (6 signals, recency weighting, rapid escalation, school baseline, trend shape, category clustering)
 
 extension/
   content.js                  — v8.3: prompt intercept, period mode check, policy sync
@@ -95,13 +94,18 @@ Student message
   → Log to chat_messages + mirror to beacon_events
 ```
 
-## Pulse Engine v2 Signals
+## Pulse Engine Signals
 1. Risk Escalation (25% weight)
 2. Rapid Escalation — fires when 3-day avg ≥ 2x 14-day avg (20%)
 3. Activity Velocity (15%)
 4. Repeat Topic Patterns (15%)
 5. Block & Re-attempt Rate (15%)
 6. Session Intensity — per school day (10%)
+
+Additional scoring: events in the last 7 days carry 3× weight, 8–14 days 1.5×, older 1×. A recency boost (up to +20) is added when recent risk rate is high. `calculateAllPulses` also sets `vs_school_avg` so each pulse knows where it sits relative to the school baseline.
+
+## A/B Pulse Structure
+Release (`app/pulse/page.tsx`) and Beta (`app/pulse-beta/page.tsx`) follow the same A/B pattern as the dashboard. Both currently share the engine in `lib/pulse_engine.ts` and the v2 split-pane layout. Divergence happens as beta evolves — create a separate engine file (e.g. `pulse_engine_next.ts`) if beta needs a different scoring model.
 
 ## Extension Intercept Layers
 1. `submit` event — catches form submission

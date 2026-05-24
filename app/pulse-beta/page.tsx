@@ -7,7 +7,7 @@ import { useAuth } from "@/lib/useAuth";
 import Sidebar from "@/components/Sidebar";
 import Image from "next/image";
 import Link from "next/link";
-import { calculateAllPulsesV2, type StudentPulse } from "@/lib/pulse_engine_v2";
+import { calculateAllPulses, type StudentPulse } from "@/lib/pulse_engine";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 
 
@@ -331,7 +331,7 @@ export default function PulseBetaPage() {
       .then(data => { setEvents(data); setLoading(false); });
   }, []);
 
-  const pulses = useMemo(() => calculateAllPulsesV2(events), [events]);
+  const pulses = useMemo(() => calculateAllPulses(events), [events]);
 
   useEffect(() => {
     if (pulses.length && !selected) setSelected(pulses[0]);
