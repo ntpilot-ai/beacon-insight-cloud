@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo, useCallback, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { SCHOOL_ID } from "@/lib/config";
 import { fetchAllEvents } from "@/lib/fetchEvents";
@@ -533,8 +534,10 @@ function StudentListItem({ pulse, isActive, onClick }: { pulse: StudentPulseV3; 
 }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
-export default function PulsePage() {
+function PulsePageContent() {
   const { loading: authLoading, authenticated } = useAuth();
+  const searchParams = useSearchParams();
+  const studentParam = searchParams.get("student");
   const [events, setEvents]     = useState<any[]>([]);
   const [acks, setAcks]         = useState<PulseAcknowledgement[]>([]);
   const [acksVersion, setAcksVersion] = useState(0);
@@ -557,10 +560,14 @@ export default function PulsePage() {
   // Keep selection synced when pulses recompute (so re-emergence shows live after ack)
   useEffect(() => {
     if (!pulses.length) return;
-    if (!selected) { setSelected(pulses[0]); return; }
+    if (!selected) {
+      const target = studentParam ? pulses.find(p => p.student_id === studentParam) : null;
+      setSelected(target ?? pulses[0]);
+      return;
+    }
     const refreshed = pulses.find(p => p.student_id === selected.student_id);
     if (refreshed && refreshed !== selected) setSelected(refreshed);
-  }, [pulses, selected]);
+  }, [pulses, selected, studentParam]);
 
   const filtered = useMemo(() =>
     pulses.filter(p => !search || p.student_id.toLowerCase().includes(search.toLowerCase())),
@@ -682,5 +689,13 @@ export default function PulsePage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function PulsePage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-[#F0F2F8] flex items-center justify-center text-slate-400 text-sm">Loading...</div>}>
+      <PulsePageContent />
+    </Suspense>
   );
 }

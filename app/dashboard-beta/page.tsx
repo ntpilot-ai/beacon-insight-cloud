@@ -174,8 +174,8 @@ function TodayPanel({ events, pulses }: { events: BeaconEvent[]; pulses: any[] }
                 </div>
 
                 <Link
-                  href="/pulse"
-                  title="Open in Pulse"
+                  href={`/pulse?student=${encodeURIComponent(studentId)}`}
+                  title={`Open ${studentId} in Pulse`}
                   className="shrink-0 inline-flex items-center gap-2 text-xs font-semibold border border-slate-200 bg-white px-3 py-1.5 rounded-full hover:border-[#06B6D4] hover:bg-cyan-50 transition-colors"
                 >
                   {pulse && (

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { SCHOOL_ID } from "@/lib/config";
 import { fetchAllEvents } from "@/lib/fetchEvents";
@@ -14,6 +15,13 @@ import {
   type PulseAcknowledgement,
   type AcknowledgeAction,
 } from "@/lib/pulse_engine_v3";
+import {
+  groupSessions,
+  mergeAnalyses,
+  isSettled,
+  type SessionAnalysis,
+  type ConversationSession,
+} from "@/lib/sessions";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 
@@ -75,6 +83,20 @@ async function fetchAcknowledgements(schoolId: string): Promise<PulseAcknowledge
   if (error || !data) return [];
   return data as PulseAcknowledgement[];
 }
+
+async function fetchSessionAnalyses(schoolId: string): Promise<SessionAnalysis[]> {
+  const { data, error } = await supabase
+    .from("beacon_session_analysis")
+    .select("session_id,escalated_to_llm,sentiment_score,sentiment_messages,sentiment_trend,context_risk,sentiment_arc,concern_summary,requires_review,reasoning,behavioural_indicators,analyzed_at")
+    .eq("school_id", schoolId)
+    .order("analyzed_at", { ascending: false });
+  if (error || !data) return [];
+  return data as SessionAnalysis[];
+}
+
+// Cap per page load so a fresh DB with many triggered sessions doesn't fan
+// out into a wall of LLM calls. Anything we skip gets picked up next refresh.
+const ANALYSIS_BUDGET_PER_LOAD = 5;
 
 async function insertAcknowledgement(payload: {
   student_id:        string;
@@ -270,14 +292,185 @@ function AcknowledgementPanel({
   );
 }
 
+// ── Session card ──────────────────────────────────────────────────────────────
+// One row per conversation session. Border colour reflects the verdict from
+// the LLM session-analysis pass: red for "requires_review", amber for high
+// context_risk, slate-dashed for triggered-but-unanalysed, light for everyday.
+const ARC_STYLE: Record<string, { label: string; color: string; bg: string }> = {
+  escalating:       { label: "↑ escalating",    color: "text-red-600",     bg: "bg-red-50"     },
+  "de-escalating":  { label: "↓ de-escalating", color: "text-emerald-600", bg: "bg-emerald-50" },
+  stable:           { label: "→ stable",         color: "text-slate-500",   bg: "bg-slate-100"  },
+  unresolved:       { label: "⚠ unresolved",    color: "text-amber-600",   bg: "bg-amber-50"   },
+};
+
+const TREND_STYLE: Record<string, { label: string; color: string; bg: string }> = {
+  deteriorating: { label: "📉 deteriorating", color: "text-amber-700",   bg: "bg-amber-50"    },
+  improving:     { label: "📈 improving",     color: "text-emerald-700", bg: "bg-emerald-50"  },
+  volatile:      { label: "↕ volatile",       color: "text-orange-700",  bg: "bg-orange-50"   },
+  stable:        { label: "→ stable",          color: "text-slate-500",   bg: "bg-slate-100"   },
+};
+
+function SessionCard({
+  session,
+  analysis,
+}: {
+  session:  ConversationSession<any>;
+  analysis: SessionAnalysis | undefined;
+}) {
+  const [open, setOpen]   = useState(false);
+  const needsReview   = !!analysis?.requires_review;
+  const ctxHigh       = analysis?.context_risk === "high";
+  const arc           = analysis?.sentiment_arc ? ARC_STYLE[analysis.sentiment_arc] : null;
+  const sentimentRan  = !!analysis;
+  const llmRan        = !!analysis?.escalated_to_llm;
+  const trend         = session.sentiment?.trend;
+  const trendStyle    = trend ? TREND_STYLE[trend] : null;
+
+  let borderColor = "#e2e8f0";          // slate-200 — quiet default
+  if (needsReview)                                borderColor = "#DC2626";
+  else if (ctxHigh)                               borderColor = "#F59E0B";
+  else if (trend === "deteriorating")             borderColor = "#F59E0B";
+  else if (trend === "volatile")                  borderColor = "#FB923C";
+  else if (session.has_trigger)                   borderColor = "#94a3b8";
+
+  const dateLabel = new Date(session.started_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const timeLabel = new Date(session.started_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+  return (
+    <div className="rounded-xl border border-slate-100 border-l-4 bg-white overflow-hidden"
+      style={{ borderLeftColor: borderColor }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full text-left px-4 py-3 hover:bg-slate-50/60 transition-colors"
+      >
+        {/* Top line — when/where + status badges */}
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-1.5">
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            <span className="text-xs font-semibold text-slate-700">{dateLabel} {timeLabel}</span>
+            <span className="text-slate-300">·</span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
+              {session.platform}
+            </span>
+            <span className="text-slate-300">·</span>
+            <span className="text-xs text-slate-400">{session.events.length} prompt{session.events.length !== 1 ? "s" : ""}</span>
+            {session.has_trigger && (
+              <>
+                <span className="text-slate-300">·</span>
+                <span className="text-[10px] font-bold text-red-600">⚡ TRIGGERED</span>
+              </>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+            {needsReview && (
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-600 text-white">
+                ⚠ Needs Review
+              </span>
+            )}
+            {!needsReview && ctxHigh && (
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                Context concern
+              </span>
+            )}
+            {arc && (
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${arc.bg} ${arc.color}`}>
+                {arc.label}
+              </span>
+            )}
+            {trendStyle && trend !== "stable" && (
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${trendStyle.bg} ${trendStyle.color}`}>
+                {trendStyle.label}
+              </span>
+            )}
+            {sentimentRan && !llmRan && (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-cyan-50 text-cyan-700">
+                Monitored
+              </span>
+            )}
+            {!sentimentRan && session.has_trigger && (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">
+                Pending analysis
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Concern summary (LLM) or trigger preview (fallback) */}
+        {analysis?.concern_summary ? (
+          <p className="text-sm text-slate-600 leading-snug line-clamp-2">{analysis.concern_summary}</p>
+        ) : session.trigger_event ? (
+          <p className="text-xs text-slate-400 italic line-clamp-1">
+            Aegis fired on: “{session.trigger_event.prompt.slice(0, 120)}”
+          </p>
+        ) : (
+          <p className="text-xs text-slate-400 italic line-clamp-1">
+            {session.events[0]?.prompt?.slice(0, 120)}
+          </p>
+        )}
+
+        {/* Behavioural indicators */}
+        {analysis && analysis.behavioural_indicators?.length > 0 && (
+          <div className="flex items-center gap-1 mt-2 flex-wrap">
+            {analysis.behavioural_indicators.slice(0, 6).map((tag, i) => (
+              <span key={i} className="text-[10px] text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
+      </button>
+
+      {/* Expanded — full event list with trigger highlighted */}
+      {open && (
+        <div className="border-t border-slate-100 divide-y divide-slate-50">
+          {session.events.map((event: any, idx: number) => {
+            const isTrigger = event === session.trigger_event;
+            const riskColor = event.risk === "critical" ? "#7C3AED"
+                            : event.risk === "high"     ? "#DC2626"
+                            : event.risk === "medium"   ? "#F59E0B"
+                            :                              "#10B981";
+            return (
+              <div key={idx} className={`flex gap-3 p-3 ${isTrigger ? "bg-red-50/60" : "bg-white"}`}>
+                <div className="shrink-0 w-14 text-right">
+                  <div className="text-[10px] text-slate-400">
+                    {new Date(event.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                  <div className="text-[10px] font-bold mt-0.5" style={{ color: riskColor }}>{event.risk?.toUpperCase()}</div>
+                  {isTrigger && <div className="text-[9px] font-bold text-red-600 mt-0.5">TRIGGER</div>}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-slate-700 leading-snug">{event.prompt}</p>
+                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                    {event.matched?.map((m: string, i: number) => (
+                      <span key={`${m}-${i}`} className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-mono">{m}</span>
+                    ))}
+                    {event.blocked && <span className="text-[10px] font-bold text-red-600 bg-red-50 px-1.5 py-0.5 rounded-full">Blocked</span>}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          {analysis?.reasoning && (
+            <div className="p-3 bg-slate-50 text-xs text-slate-500">
+              <span className="font-semibold text-slate-600">Analyst note: </span>
+              <span className="italic">{analysis.reasoning}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Student detail ────────────────────────────────────────────────────────────
 function StudentDetail({
   pulse,
   events,
+  analyses,
   onAcknowledge,
 }: {
   pulse:         StudentPulseV3;
   events:        any[];
+  analyses:      SessionAnalysis[];
   onAcknowledge: (action: AcknowledgeAction, notes: string) => Promise<void>;
 }) {
   const alert = ALERT[pulse.alert_level];
@@ -325,11 +518,25 @@ function StudentDetail({
     low:      studentEvents.some((e: any) => e.risk === "low"),
   }), [studentEvents]);
 
-  const groupedEvents = useMemo(() => ({
-    high:   studentEvents.filter((e: any) => e.risk === "high" || e.risk === "critical"),
-    medium: studentEvents.filter((e: any) => e.risk === "medium"),
-    low:    studentEvents.filter((e: any) => e.risk === "low"),
-  }), [studentEvents]);
+  // Sessions for the timeline view. Sort prioritises sessions a member of
+  // staff should look at first: requires_review > high context_risk > recency.
+  const sessions = useMemo(() => {
+    const merged = mergeAnalyses(groupSessions(studentEvents), analyses);
+    const riskOrder: Record<string, number> = { high: 3, medium: 2, low: 1 };
+    return [...merged].sort((a, b) => {
+      if (a.requires_review !== b.requires_review) return a.requires_review ? -1 : 1;
+      const ra = riskOrder[a.context_risk] ?? 0;
+      const rb = riskOrder[b.context_risk] ?? 0;
+      if (ra !== rb) return rb - ra;
+      return new Date(b.ended_at).getTime() - new Date(a.ended_at).getTime();
+    });
+  }, [studentEvents, analyses]);
+
+  // For O(1) lookup in SessionCard.
+  const analysesById = useMemo(
+    () => new Map(analyses.map(a => [a.session_id, a])),
+    [analyses],
+  );
 
   return (
     <div className="flex flex-col h-full overflow-auto">
@@ -484,10 +691,12 @@ function StudentDetail({
 
         </div>
 
-        {/* Prompt history */}
+        {/* Session timeline */}
         <div>
           <div className="flex items-center justify-between mb-3">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Prompt History</div>
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+              Session Timeline · {sessions.length} session{sessions.length !== 1 ? "s" : ""}
+            </div>
             <button
               onClick={() => window.open(`/reports/student?student=${encodeURIComponent(pulse.student_id)}`, "_blank")}
               className="text-xs font-semibold text-[#06B6D4] border border-[#06B6D4] px-3 py-1.5 rounded-xl hover:bg-cyan-50 transition-all"
@@ -496,11 +705,11 @@ function StudentDetail({
             </button>
           </div>
           <div className="space-y-2">
-            <RiskGroup riskKey="high"   events={groupedEvents.high}   />
-            <RiskGroup riskKey="medium" events={groupedEvents.medium} />
-            <RiskGroup riskKey="low"    events={groupedEvents.low}    />
-            {studentEvents.length === 0 && (
-              <div className="text-sm text-slate-400 text-center py-6">No events found</div>
+            {sessions.map(s => (
+              <SessionCard key={s.session_id} session={s} analysis={analysesById.get(s.session_id)} />
+            ))}
+            {sessions.length === 0 && (
+              <div className="text-sm text-slate-400 text-center py-6">No sessions found</div>
             )}
           </div>
         </div>
@@ -533,11 +742,15 @@ function StudentListItem({ pulse, isActive, onClick }: { pulse: StudentPulseV3; 
 }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
-export default function PulseBetaPage() {
+function PulseBetaPageContent() {
   const { loading: authLoading, authenticated } = useAuth();
+  const searchParams = useSearchParams();
+  const studentParam = searchParams.get("student");
   const [events, setEvents]     = useState<any[]>([]);
   const [acks, setAcks]         = useState<PulseAcknowledgement[]>([]);
   const [acksVersion, setAcksVersion] = useState(0);
+  const [analyses, setAnalyses] = useState<SessionAnalysis[]>([]);
+  const [analysesVersion, setAnalysesVersion] = useState(0);
   const [loading, setLoading]   = useState(true);
   const [selected, setSelected] = useState<StudentPulseV3 | null>(null);
   const [search, setSearch]     = useState("");
@@ -552,15 +765,80 @@ export default function PulseBetaPage() {
     fetchAcknowledgements(SCHOOL_ID).then(setAcks);
   }, [acksVersion]);
 
-  const pulses = useMemo(() => calculateAllPulsesV3(events, acks), [events, acks]);
+  useEffect(() => {
+    fetchSessionAnalyses(SCHOOL_ID).then(setAnalyses);
+  }, [analysesVersion]);
+
+  // Step 4: when events arrive, kick off LLM analysis for any triggered,
+  // settled session that's still unanalysed. Capped per load. Sequential —
+  // these are paid calls, no need to hammer. Runs once per mount.
+  const analysisFiredRef = useRef(false);
+  useEffect(() => {
+    if (analysisFiredRef.current) return;
+    if (!events.length) return;
+    analysisFiredRef.current = true;
+
+    const analysedIds = new Set(analyses.map(a => a.session_id));
+    const cutoff      = Date.now() - 30 * 86400000;  // only recent sessions matter for scoring
+    const candidates  = groupSessions(events)
+      .filter(s => s.has_trigger
+                && isSettled(s)
+                && !analysedIds.has(s.session_id)
+                && new Date(s.ended_at).getTime() > cutoff)
+      .slice(0, ANALYSIS_BUDGET_PER_LOAD);
+
+    if (!candidates.length) return;
+
+    (async () => {
+      let analysedAny = false;
+      for (const s of candidates) {
+        try {
+          const slimEvent = (e: any) => ({
+            created_at: e.created_at,
+            prompt:     e.prompt,
+            risk:       e.risk,
+            blocked:    e.blocked,
+            matched:    e.matched,
+          });
+          const res = await fetch("/api/session-analysis", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              session_id:          s.session_id,
+              school_id:           SCHOOL_ID,
+              student_id:          s.student_id,
+              platform:            s.platform,
+              started_at:          s.started_at,
+              ended_at:            s.ended_at,
+              events:              s.events.map(slimEvent),
+              post_trigger_events: s.context_window_events.map(slimEvent),
+            }),
+          });
+          if (res.ok) analysedAny = true;
+        } catch {
+          // Skip on failure — picked up next refresh.
+        }
+      }
+      if (analysedAny) setAnalysesVersion(v => v + 1);
+    })();
+  }, [events, analyses]);
+
+  const pulses = useMemo(
+    () => calculateAllPulsesV3(events, acks, analyses),
+    [events, acks, analyses],
+  );
 
   // Keep selection synced when pulses recompute (so re-emergence shows live after ack)
   useEffect(() => {
     if (!pulses.length) return;
-    if (!selected) { setSelected(pulses[0]); return; }
+    if (!selected) {
+      const target = studentParam ? pulses.find(p => p.student_id === studentParam) : null;
+      setSelected(target ?? pulses[0]);
+      return;
+    }
     const refreshed = pulses.find(p => p.student_id === selected.student_id);
     if (refreshed && refreshed !== selected) setSelected(refreshed);
-  }, [pulses, selected]);
+  }, [pulses, selected, studentParam]);
 
   const filtered = useMemo(() =>
     pulses.filter(p => !search || p.student_id.toLowerCase().includes(search.toLowerCase())),
@@ -674,7 +952,7 @@ export default function PulseBetaPage() {
           {/* Right detail */}
           <div className="flex-1 bg-white overflow-auto">
             {selected
-              ? <StudentDetail pulse={selected} events={events} onAcknowledge={acknowledgeSelected} />
+              ? <StudentDetail pulse={selected} events={events} analyses={analyses} onAcknowledge={acknowledgeSelected} />
               : <div className="flex items-center justify-center h-full text-slate-400 text-sm">Select a student</div>
             }
           </div>
@@ -682,5 +960,13 @@ export default function PulseBetaPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function PulseBetaPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-[#F0F2F8] flex items-center justify-center text-slate-400 text-sm">Loading...</div>}>
+      <PulseBetaPageContent />
+    </Suspense>
   );
 }

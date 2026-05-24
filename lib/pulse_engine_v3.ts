@@ -8,10 +8,17 @@
  *   Layer 2 — Near-term (events after the fingerprint window)
  *             v2-style signal scoring with 3x recency weighting + drift detection.
  *             Fires re_emergence when an acknowledged category resurfaces.
+ *             Also includes conversational_context: behavioural-arc reading of
+ *             sessions where Aegis triggered, so follow-up messages that don't
+ *             themselves match keywords still contribute to the score.
  *   Layer 3 — Real-time (last 24h)
  *             Session intensity + rapid escalation override the acknowledgement
  *             dampening — staff are kept informed of new spikes regardless.
  */
+
+import { groupSessions, mergeAnalyses, ConversationSession, SessionAnalysis } from "./sessions";
+
+export type { SessionAnalysis } from "./sessions";
 
 export interface BeaconEvent {
   id:         number;
@@ -286,6 +293,65 @@ function signalSessionIntensity(events: BeaconEvent[]): PulseSignal {
   };
 }
 
+// Reads the behavioural arc of triggered sessions. Until the LLM analysis
+// pass (step 4) lands, sentiment_arc / context_risk / requires_review default
+// on every session, so this signal scores purely off structural facts:
+// how many sessions Aegis triggered, and how much conversation followed each
+// trigger. Once analysis populates those fields, the same signal will pick
+// up "escalating" / "unresolved" / "requires_review" weight automatically.
+function signalConversationalContext(sessions: ConversationSession<BeaconEvent>[]): PulseSignal {
+  const triggered = sessions.filter(s => s.has_trigger);
+
+  if (!triggered.length) {
+    return {
+      id: "conversational_context", label: "Conversational Context",
+      score: 0, weight: 15, detail: "No triggered conversations in window",
+    };
+  }
+
+  const totalFollowups   = triggered.reduce((s, ses) => s + ses.context_window_events.length, 0);
+  const longTail         = triggered.filter(s => s.context_window_events.length >= 5).length;
+  const requiringReview  = triggered.filter(s => s.requires_review).length;
+  const escalatingArc    = triggered.filter(s => s.sentiment_arc === "escalating" || s.sentiment_arc === "unresolved").length;
+  const highContextRisk  = triggered.filter(s => s.context_risk === "high").length;
+
+  // Sentiment-only contributions — softer than LLM verdicts but visible. These
+  // fire for sessions whose pre-filter score didn't escalate to a full LLM
+  // pass but whose trajectory was still noteworthy.
+  const deteriorating    = triggered.filter(s => s.sentiment?.trend === "deteriorating").length;
+  const volatileCount    = triggered.filter(s => s.sentiment?.trend === "volatile").length;
+
+  // Structural floor + LLM verdict heft + sentiment-only softer signal.
+  const score = Math.min(
+    100,
+    triggered.length * 15
+    + longTail * 5
+    + escalatingArc * 25
+    + highContextRisk * 20
+    + requiringReview * 30
+    + deteriorating * 12
+    + volatileCount * 8,
+  );
+
+  let detail: string;
+  if (requiringReview > 0) {
+    detail = `${requiringReview} session${requiringReview !== 1 ? "s" : ""} flagged for staff review by context analysis`;
+  } else if (escalatingArc > 0 || highContextRisk > 0) {
+    detail = `${triggered.length} triggered session${triggered.length !== 1 ? "s" : ""} — ${escalatingArc + highContextRisk} showing concerning behavioural arc`;
+  } else if (deteriorating > 0 || volatileCount > 0) {
+    detail = `${triggered.length} triggered session${triggered.length !== 1 ? "s" : ""} — ${deteriorating + volatileCount} with unstable sentiment trajectory`;
+  } else if (longTail > 0) {
+    detail = `${triggered.length} triggered session${triggered.length !== 1 ? "s" : ""} with ${totalFollowups} follow-up message${totalFollowups !== 1 ? "s" : ""} (${longTail} sustained)`;
+  } else {
+    detail = `${triggered.length} triggered session${triggered.length !== 1 ? "s" : ""} with brief follow-up`;
+  }
+
+  return {
+    id: "conversational_context", label: "Conversational Context",
+    score, weight: 15, detail,
+  };
+}
+
 function runSignals(events: BeaconEvent[], buckets: Record<string, DayBucket>): PulseSignal[] {
   return [
     signalEscalation(buckets),
@@ -345,6 +411,7 @@ function calculatePulseV3(
   studentId: string,
   events:    BeaconEvent[],
   acks:      PulseAcknowledgement[],
+  analyses:  SessionAnalysis[],
 ): StudentPulseV3 {
   const now      = Date.now();
 
@@ -370,7 +437,17 @@ function calculatePulseV3(
   // ── Layer 2: near-term signals (this is the live alert) ──
   const ntBuckets = bucketByDay(nearTerm);
   const ntSignals = runSignals(nearTerm, ntBuckets);
-  const totalW    = ntSignals.reduce((s, sig) => s + sig.weight, 0);
+
+  // Step 2/3: conversational context. Sessions are derived once across all of
+  // this student's events (so a session that started before the fingerprint
+  // window but extended into near-term is still recognised by its tail),
+  // overlaid with any cached LLM analysis verdicts (step 4), then filtered to
+  // those that touched the near-term layer.
+  const allSessions = mergeAnalyses(groupSessions(events), analyses);
+  const ntSessions  = allSessions.filter(s => ts(s.ended_at) > fpEnd);
+  ntSignals.push(signalConversationalContext(ntSessions));
+
+  const totalW = ntSignals.reduce((s, sig) => s + sig.weight, 0);
   const rawScore  = totalW > 0
     ? Math.round(ntSignals.reduce((s, sig) => s + sig.score * sig.weight, 0) / totalW)
     : 0;
@@ -468,6 +545,7 @@ function calculatePulseV3(
 export function calculateAllPulsesV3(
   events: BeaconEvent[],
   acknowledgements: PulseAcknowledgement[] = [],
+  sessionAnalyses:  SessionAnalysis[] = [],
 ): StudentPulseV3[] {
   const byStudent: Record<string, BeaconEvent[]> = {};
   events.forEach(e => {
@@ -475,8 +553,16 @@ export function calculateAllPulsesV3(
     byStudent[e.student_id].push(e);
   });
 
+  // Pre-bucket analyses by student so each per-student calc only sees its own.
+  const analysesByStudent: Record<string, SessionAnalysis[]> = {};
+  sessionAnalyses.forEach(a => {
+    const sid = a.session_id.split("|")[0];
+    if (!analysesByStudent[sid]) analysesByStudent[sid] = [];
+    analysesByStudent[sid].push(a);
+  });
+
   const pulses = Object.entries(byStudent)
-    .map(([id, evts]) => calculatePulseV3(id, evts, acknowledgements))
+    .map(([id, evts]) => calculatePulseV3(id, evts, acknowledgements, analysesByStudent[id] || []))
     .sort((a, b) => b.pulse_score - a.pulse_score);
 
   const avg = pulses.length
