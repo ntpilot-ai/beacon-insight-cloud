@@ -32,7 +32,7 @@ app/
   page.tsx                    — Release dashboard (3 KPIs, today triage, collapsible term overview)
   dashboard-beta/page.tsx     — Beta dashboard (sandbox for next iteration; starts as copy of release)
   atlas/page.tsx              — Policy management
-  pulse/page.tsx              — Release Pulse (recency-weighted multi-signal engine)
+  pulse/page.tsx              — Release Pulse (stateful, acknowledgement-aware; v3 engine)
   pulse-beta/page.tsx         — Beta Pulse (sandbox for next iteration; starts as copy of release)
   chat/page.tsx               — BeaconChat UI with session sidebar
   chat/login/page.tsx         — Student login (demo code: beacon2026)
@@ -62,6 +62,7 @@ lib/
   config.ts                   — SCHOOL_ID, SCHOOL_NAME from env
   useAuth.ts                  — Client-side auth hook
   pulse_engine.ts             — Pulse engine (6 signals, recency weighting, rapid escalation, school baseline, trend shape, category clustering)
+  pulse_engine_v3.ts          — Pulse v3 (stateful: 3-layer fingerprint/near-term/real-time + acknowledgement-aware context_boost + re_emergence)
 
 extension/
   content.js                  — v8.3: prompt intercept, period mode check, policy sync
@@ -82,6 +83,7 @@ extension/
 - `policy_audit_log` — Auto-logged policy changes via Supabase trigger
 - `students` — Student records
 - `devices` — Device records
+- `pulse_acknowledgements` — Staff sign-off on student pulse alerts (memory for Pulse v3). Schema in `supabase/sql/0001_pulse_acknowledgements.sql`.
 
 ## Architecture — BeaconChat Pipeline
 ```
@@ -105,7 +107,13 @@ Student message
 Additional scoring: events in the last 7 days carry 3× weight, 8–14 days 1.5×, older 1×. A recency boost (up to +20) is added when recent risk rate is high. `calculateAllPulses` also sets `vs_school_avg` so each pulse knows where it sits relative to the school baseline.
 
 ## A/B Pulse Structure
-Release (`app/pulse/page.tsx`) and Beta (`app/pulse-beta/page.tsx`) follow the same A/B pattern as the dashboard. Both currently share the engine in `lib/pulse_engine.ts` and the v2 split-pane layout. Divergence happens as beta evolves — create a separate engine file (e.g. `pulse_engine_next.ts`) if beta needs a different scoring model.
+Release (`app/pulse/page.tsx`) uses `lib/pulse_engine_v3.ts` — stateful three-layer model that consults `pulse_acknowledgements` so old reviewed alerts don't permanently distort the live score. Beta (`app/pulse-beta/page.tsx`) is the sandbox for the next iteration; after a promotion the two pages start identical and diverge as beta evolves. The legacy stateless engine in `lib/pulse_engine.ts` is still used by the dashboard's TodayPanel.
+
+v3 layers:
+- **Layer 1 — Fingerprint**: events older than `max(now − 7d, last_ack.acknowledged_at)`. Yields frozen `baseline_score`, `dominant_categories`, and `chronic | improving | normal` pattern.
+- **Layer 2 — Near-term**: everything after the fingerprint window. Re-runs the standard signals here; fires `re_emergence` when an acknowledged category resurfaces (≥2 hits).
+- **Layer 3 — Real-time (last 24h)**: ≥3 flagged prompts or 2+ flagged with at least one high/critical → suppresses ack dampening so staff still see live spikes.
+- **`context_boost`**: `−10` if a recent (<14d) ack with action ≠ `no_action` exists; `+25` if `re_emergence`; clamped to ≥0 when Layer 3 fires.
 
 ## Extension Intercept Layers
 1. `submit` event — catches form submission

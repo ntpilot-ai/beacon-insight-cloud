@@ -114,6 +114,8 @@ function TodayPanel({ events, pulses }: { events: BeaconEvent[]; pulses: any[] }
     );
   }
 
+  const riskOrder: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+
   return (
     <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
       <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
@@ -126,61 +128,73 @@ function TodayPanel({ events, pulses }: { events: BeaconEvent[]; pulses: any[] }
         </span>
       </div>
 
-      <div className="divide-y divide-slate-50">
+      <div className="divide-y divide-slate-100">
         {students.map(([studentId, data]) => {
-          const rs        = RISK_STYLE[data.topRisk] ?? RISK_STYLE.medium;
-          const pulse     = pulses.find(p => p.student_id === studentId);
-          const categories = [...new Set(data.events.map(e => categoryFromMatched(e.matched)))];
-          const blocked   = data.events.filter(e => e.blocked).length;
-          const platforms = [...new Set(data.events.map(e => e.platform))];
+          const rs       = RISK_STYLE[data.topRisk] ?? RISK_STYLE.medium;
+          const pulse    = pulses.find(p => p.student_id === studentId);
+          const blocked  = data.events.filter(e => e.blocked).length;
+
+          // Most concerning prompt: highest risk first, then most recent.
+          const headline = [...data.events].sort((a, b) => {
+            const diff = (riskOrder[b.risk] || 0) - (riskOrder[a.risk] || 0);
+            if (diff !== 0) return diff;
+            return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+          })[0];
+
+          const latestTime = new Date(data.lastSeen).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+          const trendArrow = pulse?.trend_direction === "rising"  ? "↑"
+                           : pulse?.trend_direction === "falling" ? "↓"
+                           : "→";
 
           return (
-            <div key={studentId} className={`px-6 py-4 hover:bg-slate-50 transition-colors ${rs.bg} border-l-4`}
+            <div key={studentId} className="px-6 py-4 hover:bg-slate-50/60 transition-colors border-l-4"
               style={{ borderLeftColor: rs.dot }}>
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-3 mb-2">
-                    <span className="font-bold text-slate-800">{studentId}</span>
-                    <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${rs.text} bg-white border`}
-                      style={{ borderColor: rs.dot }}>
-                      {data.topRisk.toUpperCase()}
-                    </span>
+
+              {/* Row 1 — identity, risk, inline meta on the left; combined pulse/open pill on the right */}
+              <div className="flex items-start justify-between gap-4 mb-2.5">
+                <div className="flex items-center gap-x-3 gap-y-1 min-w-0 flex-wrap">
+                  <span className="font-bold text-slate-800 break-all">{studentId}</span>
+                  <span className={`text-[11px] font-bold tracking-wide ${rs.text}`}>
+                    {data.topRisk.toUpperCase()}
+                  </span>
+                  <span className="text-xs text-slate-400 flex items-center gap-2">
+                    <span><span className="font-semibold text-slate-600">{data.events.length}</span> incident{data.events.length !== 1 ? "s" : ""}</span>
                     {blocked > 0 && (
-                      <span className="text-xs font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded-full">
-                        {blocked} blocked
-                      </span>
+                      <>
+                        <span className="text-slate-300">·</span>
+                        <span><span className="font-semibold text-red-600">{blocked}</span> blocked</span>
+                      </>
                     )}
-                    {pulse && (
-                      <span className="text-xs text-slate-400">
-                        Pulse: <span className="font-semibold" style={{ color: rs.dot }}>{pulse.pulse_score}</span>
-                        {" "}{pulse.trend_direction === "rising" ? "↑" : pulse.trend_direction === "falling" ? "↓" : "→"}
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="space-y-1.5">
-                    {data.events.slice(0, 3).map((event, i) => (
-                      <div key={i} className="flex items-start gap-2">
-                        <span className="w-1.5 h-1.5 rounded-full mt-1.5 shrink-0" style={{ background: rs.dot }} />
-                        <span className="text-sm text-slate-600 truncate flex-1">{event.prompt}</span>
-                        <span className="text-xs text-slate-400 shrink-0">
-                          {new Date(event.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
-                        </span>
-                      </div>
-                    ))}
-                    {data.events.length > 3 && (
-                      <div className="text-xs text-slate-400 ml-3.5">+{data.events.length - 3} more incidents</div>
-                    )}
-                  </div>
+                    <span className="text-slate-300">·</span>
+                    <span>latest {latestTime}</span>
+                  </span>
                 </div>
 
-                <div className="text-right shrink-0 space-y-1">
-                  <div className="text-xs text-slate-400">{categories.slice(0, 2).join(", ")}</div>
-                  <div className="text-xs text-slate-400">{platforms.join(", ")}</div>
-                  <Link href="/pulse" className="text-xs font-semibold text-[#06B6D4] hover:underline">
-                    View in Pulse →
-                  </Link>
-                </div>
+                <Link
+                  href="/pulse"
+                  title="Open in Pulse"
+                  className="shrink-0 inline-flex items-center gap-2 text-xs font-semibold border border-slate-200 bg-white px-3 py-1.5 rounded-full hover:border-[#06B6D4] hover:bg-cyan-50 transition-colors"
+                >
+                  {pulse && (
+                    <>
+                      <span className="text-slate-500">Pulse</span>
+                      <span className="font-bold" style={{ color: rs.dot }}>{pulse.pulse_score}</span>
+                      <span style={{ color: rs.dot }}>{trendArrow}</span>
+                      <span className="text-slate-300">|</span>
+                    </>
+                  )}
+                  <span className="text-[#06B6D4]">Open →</span>
+                </Link>
+              </div>
+
+              {/* Row 2 — headline prompt with source AI engine tag */}
+              <div className="flex items-start gap-3 pl-3 border-l-2 border-slate-200">
+                <blockquote className="text-sm text-slate-700 leading-snug line-clamp-2 flex-1 min-w-0">
+                  {headline.prompt}
+                </blockquote>
+                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full mt-0.5">
+                  {headline.platform}
+                </span>
               </div>
             </div>
           );
