@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import Image from "next/image";
 
 interface BeaconEvent {
@@ -36,7 +36,6 @@ export default function BeaconIntelligence({ events, schoolName = "the school" }
   const [intel, setIntel]       = useState<Intelligence | null>(null);
   const [loading, setLoading]   = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const prevCountRef            = useRef(0);
 
   async function generate() {
     if (!events?.length) return;
@@ -106,16 +105,6 @@ Data:
     }
   }
 
-  useEffect(() => {
-    const prev = prevCountRef.current;
-    const curr = events.length;
-    if (curr > 0 && (prev === 0 || curr - prev >= 5)) {
-      prevCountRef.current = curr;
-      generate();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events.length]);
-
   const cfg = intel?.risk_level ? (RISK_CONFIG[intel.risk_level] ?? RISK_CONFIG.low) : RISK_CONFIG.low;
 
   return (
@@ -155,7 +144,7 @@ Data:
                 ? "Analysing safeguarding data across the school..."
                 : intel
                 ? intel.headline
-                : "Waiting for event data..."}
+                : "Click refresh arrow to generate AI summary..."}
             </div>
           </div>
         </div>
