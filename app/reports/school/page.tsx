@@ -43,6 +43,7 @@ export default function SchoolReportPage() {
 
   useEffect(() => {
     supabase.from("beacon_events").select("*").order("created_at", { ascending: false })
+      .range(0, 49999)
       .then(({ data }) => { setEvents((data as BeaconEvent[]) || []); setLoading(false); });
   }, []);
 

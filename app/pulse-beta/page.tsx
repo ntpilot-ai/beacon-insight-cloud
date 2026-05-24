@@ -327,6 +327,7 @@ export default function PulseBetaPage() {
 
   useEffect(() => {
     supabase.from("beacon_events").select("*").order("created_at", { ascending: true })
+      .range(0, 49999)
       .then(({ data }) => { setEvents(data || []); setLoading(false); });
   }, []);
 

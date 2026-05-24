@@ -98,7 +98,8 @@ export default function DashboardLite() {
       .from("beacon_events")
       .select("*")
       .eq("school_id", SCHOOL_ID)
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .range(0, 49999);
     setEvents((data as BeaconEvent[]) || []);
   }
 

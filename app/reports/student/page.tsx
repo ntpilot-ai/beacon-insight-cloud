@@ -48,6 +48,7 @@ function StudentReportContent() {
 
   useEffect(() => {
     supabase.from("beacon_events").select("*").order("created_at", { ascending: false })
+      .range(0, 49999)
       .then(({ data }) => {
         const evts = (data as BeaconEvent[]) || [];
         setEvents(evts);

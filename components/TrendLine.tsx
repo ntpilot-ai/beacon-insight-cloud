@@ -20,11 +20,13 @@ interface BeaconEvent {
 
 interface Props {
   events: BeaconEvent[];
+  // The reference date the window ends on. Lets the caller scope the chart to a
+  // historical term so "last 7 days" means the last 7 days of that term, not of
+  // wall-clock today. Defaults to today.
+  anchor?: Date;
 }
 
-function getBuckets(events: BeaconEvent[], mode: "daily" | "weekly") {
-  const now = new Date();
-
+function getBuckets(events: BeaconEvent[], mode: "daily" | "weekly", now: Date) {
   if (mode === "daily") {
     // Last 7 days, one bucket per day
     return Array.from({ length: 7 }, (_, i) => {
@@ -82,15 +84,21 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
-export default function TrendLine({ events }: Props) {
+export default function TrendLine({ events, anchor }: Props) {
   const [mode, setMode] = useState<"daily" | "weekly">("daily");
 
-  const data = useMemo(() => getBuckets(events, mode), [events, mode]);
+  const anchorTime = anchor?.getTime();
+  const now = useMemo(
+    () => (anchorTime !== undefined ? new Date(anchorTime) : new Date()),
+    [anchorTime],
+  );
+  const isAnchored = anchorTime !== undefined;
+
+  const data = useMemo(() => getBuckets(events, mode, now), [events, mode, now]);
 
   const totalInPeriod = data.reduce((s, d) => s + d.Prompts, 0);
   const prev = useMemo(() => {
     // Compare to the prior equivalent period for the trend indicator
-    const now = new Date();
     const periodDays = mode === "daily" ? 7 : 56;
     const cutoff = new Date(now);
     cutoff.setDate(cutoff.getDate() - periodDays);
@@ -100,9 +108,16 @@ export default function TrendLine({ events }: Props) {
       const d = new Date(e.created_at);
       return d >= prior && d < cutoff;
     }).length;
-  }, [events, mode]);
+  }, [events, mode, now]);
 
   const pctChange = prev === 0 ? null : Math.round(((totalInPeriod - prev) / prev) * 100);
+
+  const fmt = (d: Date) => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const windowStart = new Date(now);
+  windowStart.setDate(windowStart.getDate() - (mode === "daily" ? 6 : 55));
+  const windowLabel = isAnchored
+    ? `${fmt(windowStart)} – ${fmt(now)}`
+    : (mode === "daily" ? "Last 7 days" : "Last 8 weeks");
 
   return (
     <section className="bg-white rounded-3xl p-6 shadow-sm">
@@ -111,7 +126,7 @@ export default function TrendLine({ events }: Props) {
         <div>
           <h2 className="text-3xl font-bold">Activity Trend</h2>
           <p className="text-slate-400 text-sm mt-1">
-            {mode === "daily" ? "Last 7 days" : "Last 8 weeks"} &nbsp;·&nbsp;
+            {windowLabel} &nbsp;·&nbsp;
             {totalInPeriod} prompts
             {pctChange !== null && (
               <span className={`ml-2 font-semibold ${pctChange > 0 ? "text-amber-500" : "text-emerald-500"}`}>

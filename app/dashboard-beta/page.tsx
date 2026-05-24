@@ -200,6 +200,16 @@ function OverviewSection({ events, term, setTerm }: {
 }) {
   const [open, setOpen] = useState(false);
 
+  // Anchor the trend chart to the end of the selected term (clamped to today),
+  // so "last 7 days" reflects the visible term, not wall-clock today.
+  const trendAnchor = useMemo(() => {
+    const t = TERMS.find(t => t.label === term) ?? TERMS[0];
+    const termEnd = new Date(t.end);
+    termEnd.setHours(23, 59, 59);
+    const now = new Date();
+    return termEnd < now ? termEnd : now;
+  }, [term]);
+
   const total    = events.length;
   const high     = events.filter(e => e.risk === "high" || e.risk === "critical").length;
   const medium   = events.filter(e => e.risk === "medium").length;
@@ -251,7 +261,7 @@ function OverviewSection({ events, term, setTerm }: {
           {/* Activity trend chart */}
           <div className="mb-6">
             <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Activity Trend</div>
-            <TrendLine events={events} />
+            <TrendLine events={events} anchor={trendAnchor} />
           </div>
 
           {/* Risk breakdown + Platform side by side */}
@@ -316,7 +326,10 @@ export default function DashboardV2() {
       .from("beacon_events")
       .select("*")
       .eq("school_id", SCHOOL_ID)
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      // Override Supabase's default 1000-row cap so older terms aren't dropped
+      // off the bottom of a DESC query as the event table grows.
+      .range(0, 49999);
     setEvents((data as BeaconEvent[]) || []);
   }
 
