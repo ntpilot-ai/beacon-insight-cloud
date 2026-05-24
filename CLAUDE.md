@@ -29,8 +29,8 @@ SUPABASE_SERVICE_KEY
 ## File Structure
 ```
 app/
-  page.tsx                    — Release dashboard
-  dashboard-beta/page.tsx     — Beta dashboard (3 KPIs, focused view)
+  page.tsx                    — Release dashboard (3 KPIs, today triage, collapsible term overview)
+  dashboard-beta/page.tsx     — Beta dashboard (sandbox for next iteration; starts as copy of release)
   atlas/page.tsx              — Policy management
   pulse/page.tsx              — Release Pulse (v1 engine)
   pulse-beta/page.tsx         — Beta Pulse (v2 engine)
@@ -110,12 +110,13 @@ Student message
 4. `fetch` monkey-patch — catches API calls at network level
 
 ## A/B Dashboard Structure
-- Release: `app/page.tsx` — full featured, all components
-- Beta: `app/dashboard-beta/page.tsx` — focused triage view:
-  - Zone 1: Beacon Intelligence banner
-  - Zone 2: 3 KPIs (Total Prompts, Safe Usage Rate %, Blocked Today)
-  - Zone 3: Students needing attention today (last 24h)
-  - Zone 4: Collapsible term overview (TrendLine, risk breakdown, platform usage)
+Release (`app/page.tsx`) is the current stable dashboard. Beta (`app/dashboard-beta/page.tsx`) is the sandbox where new ideas are iterated before being promoted to release. After a promotion the two start identical; divergence happens as beta evolves.
+
+Current shared layout (both pages):
+- Zone 1: Beacon Intelligence banner (manual refresh only — no auto-fetch on load)
+- Zone 2: 3 KPIs (Total Prompts, Safe Usage Rate %, Blocked Today)
+- Zone 3: Students needing attention today (last 24h)
+- Zone 4: Collapsible term overview (TrendLine, risk breakdown, platform usage)
 
 ## Coding Conventions
 - Tailwind v4 utility classes only — no custom CSS
