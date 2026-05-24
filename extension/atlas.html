@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Beacon Atlas</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+
+.wrapper{
+  padding:24px;
+}
+
+.controls{
+  display:flex;
+  gap:14px;
+  margin-bottom:24px;
+}
+
+input,select{
+  padding:14px;
+  border-radius:12px;
+  border:1px solid #CBD5E1;
+}
+
+.columns{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:24px;
+}
+
+.policy-item{
+  background:#F8FAFC;
+  border-radius:14px;
+  padding:14px;
+  margin-bottom:12px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+
+.remove{
+  background:#DC2626;
+}
+
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <div class="title">
+      Beacon Atlas
+    </div>
+
+    <div class="subtitle">
+      Runtime safeguarding governance controls
+    </div>
+  </div>
+</div>
+
+<div class="wrapper">
+
+<div class="panel">
+
+<div class="controls">
+
+  <input
+    id="word"
+    placeholder="Enter policy word"
+  >
+
+  <select id="severity">
+    <option value="highRisk">
+      High Risk
+    </option>
+
+    <option value="mediumRisk">
+      Medium Risk
+    </option>
+  </select>
+
+  <button id="addBtn">
+    Add Policy
+  </button>
+
+</div>
+
+<div class="columns">
+
+  <div>
+    <h2>High Risk Policies</h2>
+    <div id="highList"></div>
+  </div>
+
+  <div>
+    <h2>Medium Risk Policies</h2>
+    <div id="mediumList"></div>
+  </div>
+
+</div>
+
+</div>
+
+</div>
+
+<script src="atlas.js"></script>
+
+</body>
+</html>

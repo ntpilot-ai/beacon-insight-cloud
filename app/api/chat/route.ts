@@ -23,11 +23,18 @@ const HIGH_RISK = [
 ];
 const MEDIUM_RISK = ["violence","weapon","hate","weed","bully","explicit","self harm","sex","porn","adult","nudes","sexting","drugs","alcohol","shank","stab"];
 
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchesWord(text: string, keyword: string): boolean {
+  return new RegExp(`\\b${escapeRegex(keyword)}\\b`, "i").test(text);
+}
+
 function assessRisk(text: string): { risk: string; matched: string[]; blocked: boolean } {
-  const lower = text.toLowerCase();
-  const highMatches = HIGH_RISK.filter(w => lower.includes(w));
+  const highMatches = HIGH_RISK.filter(w => matchesWord(text, w));
   if (highMatches.length) return { risk: "high", matched: highMatches, blocked: true };
-  const medMatches = MEDIUM_RISK.filter(w => lower.includes(w));
+  const medMatches = MEDIUM_RISK.filter(w => matchesWord(text, w));
   if (medMatches.length) return { risk: "medium", matched: medMatches, blocked: false };
   return { risk: "low", matched: [], blocked: false };
 }
@@ -86,14 +93,12 @@ export async function POST(req: NextRequest) {
 
     // Check against school-specific policies from Supabase
     if (policies?.length) {
-      const lower = message.toLowerCase();
-
       const schoolHighMatches = policies
-        .filter(p => p.severity === "high" && lower.includes(p.word))
+        .filter(p => p.severity === "high" && matchesWord(message, p.word))
         .map(p => p.word);
 
       const schoolMedMatches = policies
-        .filter(p => p.severity === "medium" && lower.includes(p.word))
+        .filter(p => p.severity === "medium" && matchesWord(message, p.word))
         .map(p => p.word);
 
       if (schoolHighMatches.length) {

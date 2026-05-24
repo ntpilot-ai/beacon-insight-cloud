@@ -1,0 +1,78 @@
+#beacon-badge {
+
+  position: fixed;
+
+  bottom: 20px;
+  right: 20px;
+
+  background: #013B93;
+
+  color: white;
+
+  padding: 12px 16px;
+
+  border-radius: 14px;
+
+  font-family: Arial, sans-serif;
+
+  font-size: 14px;
+
+  z-index: 999999;
+
+  box-shadow:
+    0 4px 12px rgba(0,0,0,0.2);
+
+}
+
+.beacon-warning {
+
+  position: fixed;
+
+  top: 20px;
+  right: 20px;
+
+  background: #DC2626;
+
+  color: white;
+
+  padding: 14px 18px;
+
+  border-radius: 12px;
+
+  font-family: Arial, sans-serif;
+
+  z-index: 999999;
+
+  box-shadow:
+    0 4px 12px rgba(0,0,0,0.25);
+
+}
+
+.beacon-block {
+
+  position: fixed;
+
+  top: 20px;
+  left: 50%;
+
+  transform:
+    translateX(-50%);
+
+  background: #DC2626;
+
+  color: white;
+
+  padding: 18px 24px;
+
+  border-radius: 14px;
+
+  font-family: Arial, sans-serif;
+
+  font-weight: bold;
+
+  z-index: 999999;
+
+  box-shadow:
+    0 6px 18px rgba(0,0,0,0.3);
+
+}

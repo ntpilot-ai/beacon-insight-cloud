@@ -1,0 +1,106 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Beacon Insight v7</title>
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <div class="title">Beacon Insight v7</div>
+    <div class="subtitle">
+      Unified safeguarding intelligence platform
+    </div>
+  </div>
+
+  <button onclick="loadDashboard()">
+    Refresh
+  </button>
+</div>
+
+<div class="stats">
+
+  <div class="card">
+    <div class="label">Students</div>
+    <div class="value" id="studentsCount">0</div>
+  </div>
+
+  <div class="card">
+    <div class="label">Alerts</div>
+    <div class="value orange" id="alertsCount">0</div>
+  </div>
+
+  <div class="card">
+    <div class="label">Blocked</div>
+    <div class="value red" id="blockedCount">0</div>
+  </div>
+
+</div>
+
+<div class="layout">
+
+  <div class="left">
+
+    <div class="panel">
+      <h2>Recent Events</h2>
+      <div id="timeline"></div>
+    </div>
+
+  </div>
+
+  <div class="right">
+
+    <div class="panel">
+
+      <h2>Atlas Policy Management</h2>
+
+      <div class="policy-add">
+
+        <input
+          id="policyWord"
+          placeholder="Enter risk word"
+        >
+
+        <select id="policySeverity">
+          <option value="highRisk">
+            High Risk
+          </option>
+
+          <option value="mediumRisk">
+            Medium Risk
+          </option>
+        </select>
+
+        <button id="addPolicyBtn">
+          Add
+        </button>
+
+      </div>
+
+      <div class="policy-columns">
+
+        <div>
+          <h3>High Risk</h3>
+          <div id="highRiskList"></div>
+        </div>
+
+        <div>
+          <h3>Medium Risk</h3>
+          <div id="mediumRiskList"></div>
+        </div>
+
+      </div>
+
+    </div>
+
+  </div>
+
+</div>
+
+<script src="dashboard.js"></script>
+
+</body>
+</html>

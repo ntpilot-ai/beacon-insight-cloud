@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Beacon Insight</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+
+.stats{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:20px;
+  padding:24px;
+}
+
+.card{
+  background:white;
+  border-radius:22px;
+  padding:24px;
+  box-shadow:0 4px 18px rgba(0,0,0,0.06);
+}
+
+.label{
+  color:#64748B;
+}
+
+.value{
+  margin-top:10px;
+  font-size:42px;
+  font-weight:bold;
+  color:#013B93;
+}
+
+.orange{color:#F59E0B;}
+.red{color:#DC2626;}
+.green{color:#10B981;}
+
+.charts{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:24px;
+  padding:0 24px 24px;
+}
+
+.layout{
+  display:grid;
+  grid-template-columns:2fr 1fr;
+  gap:24px;
+  padding:0 24px 24px;
+}
+
+.timeline-item{
+  background:#F8FAFC;
+  border-radius:16px;
+  padding:16px;
+  margin-bottom:14px;
+  border-left:6px solid #CBD5E1;
+}
+
+.timeline-item.high{
+  border-left-color:#DC2626;
+}
+
+.timeline-item.medium{
+  border-left-color:#F59E0B;
+}
+
+.timeline-item.low{
+  border-left-color:#10B981;
+}
+
+.student-card{
+  background:#F8FAFC;
+  border-radius:16px;
+  padding:16px;
+  margin-bottom:12px;
+}
+
+canvas{
+  width:100%;
+}
+
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <div class="title">
+      Beacon Insight
+    </div>
+
+    <div class="subtitle">
+      Operational safeguarding intelligence dashboard
+    </div>
+  </div>
+
+  <button onclick="loadDashboard()">
+    Refresh
+  </button>
+</div>
+
+<div class="stats">
+
+  <div class="card">
+    <div class="label">Prompts Detected</div>
+    <div class="value" id="studentsCount">0</div>
+  </div>
+
+  <div class="card">
+    <div class="label">Alerts</div>
+    <div class="value orange" id="alertsCount">0</div>
+  </div>
+
+  <div class="card">
+    <div class="label">Blocked</div>
+    <div class="value red" id="blockedCount">0</div>
+  </div>
+
+  <div class="card">
+    <div class="label">Wellbeing</div>
+    <div class="value green">7.4</div>
+  </div>
+
+</div>
+
+<div class="charts">
+
+  <div class="panel">
+    <h2>Risk Trend</h2>
+    <canvas id="riskChart" width="500" height="220"></canvas>
+  </div>
+
+  <div class="panel">
+    <h2>Platform Usage</h2>
+    <canvas id="platformChart" width="500" height="220"></canvas>
+  </div>
+
+</div>
+
+<div class="layout">
+
+  <div class="panel">
+    <h2>Recent Safeguarding Events</h2>
+    <div id="timeline"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Students of Concern</h2>
+    <div id="students"></div>
+  </div>
+
+</div>
+
+<script src="insight.js"></script>
+
+</body>
+</html>

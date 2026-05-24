@@ -1,0 +1,43 @@
+
+body{
+  margin:0;
+  background:#F5F7FB;
+  font-family:Arial,sans-serif;
+  color:#0F172A;
+}
+
+.topbar{
+  background:#013B93;
+  color:white;
+  padding:28px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+
+.title{
+  font-size:36px;
+  font-weight:bold;
+}
+
+.subtitle{
+  margin-top:8px;
+  opacity:0.85;
+}
+
+.panel{
+  background:white;
+  border-radius:24px;
+  padding:24px;
+  box-shadow:0 4px 18px rgba(0,0,0,0.06);
+}
+
+button{
+  background:#013B93;
+  color:white;
+  border:none;
+  border-radius:12px;
+  padding:12px 16px;
+  font-weight:bold;
+  cursor:pointer;
+}

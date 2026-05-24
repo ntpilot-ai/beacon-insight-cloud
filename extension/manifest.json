@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Beacon",
+  "version": "8.2",
+  "description": "Beacon safeguarding intelligence platform",
+
+  "permissions": [
+    "storage",
+    "identity",
+    "nativeMessaging"
+  ],
+
+  "host_permissions": [
+    "https://chat.openai.com/*",
+    "https://chatgpt.com/*",
+    "https://gemini.google.com/*",
+    "https://claude.ai/*",
+    "https://copilot.microsoft.com/*",
+    "https://eyvwvmjcuahduuokpmng.supabase.co/*"
+  ],
+
+  "action": {
+    "default_title": "Beacon",
+    "default_popup": "popup.html"
+  },
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chat.openai.com/*",
+        "https://chatgpt.com/*",
+        "https://gemini.google.com/*",
+        "https://claude.ai/*",
+        "https://copilot.microsoft.com/*"
+      ],
+      "js": ["identity.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
