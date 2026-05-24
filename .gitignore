@@ -42,3 +42,7 @@ next-env.d.ts
 
 # extension build artifacts / backups
 extension/*.zip
+
+# extension signing keys — NEVER commit
+*.pem
+*.crx
