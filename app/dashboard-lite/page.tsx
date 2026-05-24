@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
+import { fetchAllEvents } from "@/lib/fetchEvents";
 import { useAuth } from "@/lib/useAuth";
 import { SCHOOL_ID, SCHOOL_NAME } from "@/lib/config";
 import Sidebar from "@/components/Sidebar";
@@ -94,13 +95,8 @@ export default function DashboardLite() {
   const [live, setLive]     = useState(true);
 
   async function loadEvents() {
-    const { data } = await supabase
-      .from("beacon_events")
-      .select("*")
-      .eq("school_id", SCHOOL_ID)
-      .order("created_at", { ascending: false })
-      .range(0, 49999);
-    setEvents((data as BeaconEvent[]) || []);
+    const data = await fetchAllEvents<BeaconEvent>({ schoolId: SCHOOL_ID, ascending: false });
+    setEvents(data);
   }
 
   useEffect(() => {

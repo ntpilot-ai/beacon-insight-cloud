@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
+import { fetchAllEvents } from "@/lib/fetchEvents";
 import { useAuth } from "@/lib/useAuth";
 import { SCHOOL_ID, SCHOOL_NAME } from "@/lib/config";
 import { calculateAllPulses } from "@/lib/pulse_engine";
@@ -322,15 +323,8 @@ export default function DashboardV2() {
   const [live, setLive]     = useState(true);
 
   async function loadEvents() {
-    const { data } = await supabase
-      .from("beacon_events")
-      .select("*")
-      .eq("school_id", SCHOOL_ID)
-      .order("created_at", { ascending: false })
-      // Override Supabase's default 1000-row cap so older terms aren't dropped
-      // off the bottom of a DESC query as the event table grows.
-      .range(0, 49999);
-    setEvents((data as BeaconEvent[]) || []);
+    const data = await fetchAllEvents<BeaconEvent>({ schoolId: SCHOOL_ID, ascending: false });
+    setEvents(data);
   }
 
   useEffect(() => {

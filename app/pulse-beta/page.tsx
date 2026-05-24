@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
+import { fetchAllEvents } from "@/lib/fetchEvents";
 import { useAuth } from "@/lib/useAuth";
 import Sidebar from "@/components/Sidebar";
 import Image from "next/image";
@@ -326,9 +327,8 @@ export default function PulseBetaPage() {
   const [openTiers, setOpenTiers] = useState<Record<string, boolean>>({ critical: true, high: false, medium: false, low: false });
 
   useEffect(() => {
-    supabase.from("beacon_events").select("*").order("created_at", { ascending: true })
-      .range(0, 49999)
-      .then(({ data }) => { setEvents(data || []); setLoading(false); });
+    fetchAllEvents({ ascending: true })
+      .then(data => { setEvents(data); setLoading(false); });
   }, []);
 
   const pulses = useMemo(() => calculateAllPulsesV2(events), [events]);

@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { fetchAllEvents } from "@/lib/fetchEvents";
 import { SCHOOL_NAME } from "@/lib/config";
 import Image from "next/image";
 import { useAuth } from "@/lib/useAuth";
@@ -47,10 +48,8 @@ function StudentReportContent() {
   const [loading, setLoading]   = useState(true);
 
   useEffect(() => {
-    supabase.from("beacon_events").select("*").order("created_at", { ascending: false })
-      .range(0, 49999)
-      .then(({ data }) => {
-        const evts = (data as BeaconEvent[]) || [];
+    fetchAllEvents<BeaconEvent>({ ascending: false })
+      .then(evts => {
         setEvents(evts);
         const ids = [...new Set(evts.map(e => e.student_id))].sort();
         setAllStudents(ids);

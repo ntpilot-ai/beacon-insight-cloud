@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import { supabase } from "@/lib/supabase";
+import { fetchAllEvents } from "@/lib/fetchEvents";
 import { SCHOOL_NAME } from "@/lib/config";
 import Image from "next/image";
 import { useAuth } from "@/lib/useAuth";
@@ -42,9 +43,8 @@ export default function SchoolReportPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.from("beacon_events").select("*").order("created_at", { ascending: false })
-      .range(0, 49999)
-      .then(({ data }) => { setEvents((data as BeaconEvent[]) || []); setLoading(false); });
+    fetchAllEvents<BeaconEvent>({ ascending: false })
+      .then(data => { setEvents(data); setLoading(false); });
   }, []);
 
   const filtered = useMemo(() => {
