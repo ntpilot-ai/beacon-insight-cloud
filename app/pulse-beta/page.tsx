@@ -119,6 +119,8 @@ interface TriageResultRow {
   notify_immediately: boolean;
   reasoning:          string | null;
   requested_by:       string | null;
+  reviewed_at?:       string | null;
+  reviewed_by?:       string | null;
 }
 
 // ── Cluster types (Brief 6) ───────────────────────────────────────────────────
@@ -213,11 +215,10 @@ async function fetchTodaysTriage(schoolId: string): Promise<TriageResultRow[]> {
   const today = new Date().toISOString().slice(0, 10);
   const { data, error } = await supabase
     .from("beacon_triage_results")
-    .select("id,school_id,student_id,assessed_at,triage,concern_summary,suggested_action,notify_immediately,reasoning,requested_by")
+    .select("id,school_id,student_id,assessed_at,triage,concern_summary,suggested_action,notify_immediately,reasoning,requested_by,reviewed_at,reviewed_by")
     .eq("school_id", schoolId)
     .gte("assessed_at", `${today}T00:00:00Z`)
     .lte("assessed_at", `${today}T23:59:59.999Z`)
-    .is("reviewed_at", null)
     .order("assessed_at", { ascending: false });
   if (error || !data) return [];
   return data as TriageResultRow[];
@@ -2336,9 +2337,9 @@ function TriageQueue({
     [sorted, activeSnoozeByStudent],
   );
 
-  const urgent      = visibleResults.filter(r => r.notify_immediately || r.triage === "urgent");
-  const actionable  = visibleResults.filter(r => !urgent.includes(r) && r.triage !== "silent_monitoring");
-  const monitoring  = visibleResults.filter(r => r.triage === "silent_monitoring");
+  const urgent      = visibleResults.filter(r => !r.reviewed_at && (r.notify_immediately || r.triage === "urgent"));
+  const actionable  = visibleResults.filter(r => !r.reviewed_at && !urgent.includes(r) && r.triage !== "silent_monitoring");
+  const monitoring  = visibleResults.filter(r => r.triage === "silent_monitoring" || !!r.reviewed_at);
   const [monitorOpen, setMonitorOpen] = useState(false);
   const [snoozedOpen, setSnoozedOpen] = useState(false);
 
@@ -2516,8 +2517,13 @@ function TriageQueue({
             <div className="px-4 pb-4 space-y-2">
               {monitoring.map(r => (
                 <div key={r.id} className="text-xs text-slate-500 px-3 py-2 rounded-lg bg-slate-50 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0 flex-wrap">
                     <span className="font-semibold text-slate-700">{r.student_id}</span>
+                    {r.reviewed_at && (
+                      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
+                        ✓ Reviewed
+                      </span>
+                    )}
                     <span className="text-slate-400 truncate">{r.concern_summary ?? "Stable activity, previously reviewed"}</span>
                   </div>
                   <button
