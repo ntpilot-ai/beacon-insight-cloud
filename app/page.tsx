@@ -127,9 +127,21 @@ function TodayPanel({
     }
   });
 
+  const nowMs = Date.now();
+  const activeSnoozeSet = new Set(
+    snoozes
+      .filter(s => !s.broken_early && (!s.expires_at || new Date(s.expires_at).getTime() > nowMs))
+      .map(s => s.student_id)
+  );
+  const ackedSet = new Set(acks.map(a => a.student_id));
+
   const students = Object.entries(byStudent)
     .sort((a, b) => {
       const riskOrder: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+      // Status group: active (0) → acked (1) → snoozed (2)
+      const statusA = activeSnoozeSet.has(a[0]) ? 2 : ackedSet.has(a[0]) ? 1 : 0;
+      const statusB = activeSnoozeSet.has(b[0]) ? 2 : ackedSet.has(b[0]) ? 1 : 0;
+      if (statusA !== statusB) return statusA - statusB;
       return (riskOrder[b[1].topRisk] || 0) - (riskOrder[a[1].topRisk] || 0);
     });
 
@@ -171,12 +183,10 @@ function TodayPanel({
           const pulse    = pulses.find(p => p.student_id === studentId);
           const blocked  = data.events.filter(e => e.blocked).length;
 
-          // Action status from Pulse
-          const now = Date.now();
           const activeSnooze = snoozes.find(s =>
             s.student_id === studentId &&
             !s.broken_early &&
-            (!s.expires_at || new Date(s.expires_at).getTime() > now),
+            (!s.expires_at || new Date(s.expires_at).getTime() > nowMs),
           );
           const recentAck = acks
             .filter(a => a.student_id === studentId)
@@ -187,13 +197,18 @@ function TodayPanel({
                            : pulse?.trend_direction === "falling" ? "↓"
                            : "→";
 
-          return (
-            <div key={studentId} className={`px-6 py-4 hover:bg-slate-50/60 transition-colors border-l-4 ${activeSnooze || recentAck ? "opacity-70" : ""}`}
-              style={{ borderLeftColor: activeSnooze ? "#06B6D4" : recentAck ? "#10B981" : rs.dot }}>
+          const rowBg    = activeSnooze ? "bg-cyan-50/40"
+                         : recentAck    ? "bg-emerald-50/40"
+                         : "";
+          const borderColor = activeSnooze ? "#06B6D4" : recentAck ? "#10B981" : rs.dot;
 
-              {/* Row 1 — identity, risk, inline meta */}
+          return (
+            <div key={studentId}
+              className={`px-5 py-2.5 border-l-4 transition-colors hover:brightness-95 ${rowBg}`}
+              style={{ borderLeftColor: borderColor }}>
+
               <div className="flex items-center gap-x-3 gap-y-1 min-w-0 flex-wrap">
-                <span className="font-bold text-slate-800 break-all">{studentId}</span>
+                <span className="font-bold text-slate-800 text-sm break-all">{studentId}</span>
                 <span className={`text-[11px] font-bold tracking-wide ${rs.text}`}>
                   {data.topRisk.toUpperCase()}
                 </span>
