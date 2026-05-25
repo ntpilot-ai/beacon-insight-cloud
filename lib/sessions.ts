@@ -56,6 +56,10 @@ export interface ConversationSession<E extends SessionEvent = SessionEvent> {
   // beacon_session_analysis (sentiment runs on every triggered session, so
   // any row has sentiment fields whether or not it escalated to the LLM).
   sentiment?:            SessionSentiment;
+  // Audit trail for the LLM analysis pass. Populated only after a staff
+  // member explicitly clicks "Run AI context analysis" on this session.
+  llm_requested_by?:     string;
+  llm_requested_at?:     string;
 }
 
 const SESSION_GAP_MS       = 30 * 60 * 1000;
@@ -176,10 +180,17 @@ export function isSettled(
 // behavioural_indicators) are only populated when escalated_to_llm is true.
 export interface SessionAnalysis {
   session_id:             string;
+  // Sentiment pre-filter — populated on every row, runs automatically.
   escalated_to_llm:       boolean;
   sentiment_score:        number | null;
   sentiment_messages:     number[] | null;
   sentiment_trend:        SentimentTrend | null;
+  // LLM verdict — only populated after a teacher clicks "Run AI context
+  // analysis" on a flagged session. llm_requested_at is the truth source for
+  // "has the LLM actually run?" — verdict columns can be null even when
+  // escalated_to_llm is true.
+  llm_requested_by:       string | null;
+  llm_requested_at:       string | null;
   context_risk:           ContextRisk | null;
   sentiment_arc:          SentimentArc | null;
   concern_summary:        string | null;
@@ -220,6 +231,8 @@ export function mergeAnalyses<E extends SessionEvent>(
       requires_review:  a.requires_review,
       semantic_summary: a.concern_summary ?? undefined,
       sentiment,
+      llm_requested_by: a.llm_requested_by ?? undefined,
+      llm_requested_at: a.llm_requested_at ?? undefined,
     };
   });
 }

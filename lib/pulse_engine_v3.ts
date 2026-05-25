@@ -311,35 +311,37 @@ function signalConversationalContext(sessions: ConversationSession<BeaconEvent>[
 
   const totalFollowups   = triggered.reduce((s, ses) => s + ses.context_window_events.length, 0);
   const longTail         = triggered.filter(s => s.context_window_events.length >= 5).length;
-  const requiringReview  = triggered.filter(s => s.requires_review).length;
-  const escalatingArc    = triggered.filter(s => s.sentiment_arc === "escalating" || s.sentiment_arc === "unresolved").length;
-  const highContextRisk  = triggered.filter(s => s.context_risk === "high").length;
 
-  // Sentiment-only contributions — softer than LLM verdicts but visible. These
-  // fire for sessions whose pre-filter score didn't escalate to a full LLM
-  // pass but whose trajectory was still noteworthy.
-  const deteriorating    = triggered.filter(s => s.sentiment?.trend === "deteriorating").length;
-  const volatileCount    = triggered.filter(s => s.sentiment?.trend === "volatile").length;
+  // LLM verdicts — only available for sessions a teacher manually ran AI on.
+  const llmRan           = triggered.filter(s => !!s.llm_requested_at);
+  const requiringReview  = llmRan.filter(s => s.requires_review).length;
+  const escalatingArc    = llmRan.filter(s => s.sentiment_arc === "escalating" || s.sentiment_arc === "unresolved").length;
+  const highContextRisk  = llmRan.filter(s => s.context_risk === "high").length;
 
-  // Structural floor + LLM verdict heft + sentiment-only softer signal.
+  // Sentiment-flagged but LLM not yet run — contribute a moderate score so
+  // these sessions are not invisible to the engine even before a teacher
+  // requests AI analysis.
+  const flaggedAwaitingLLM = triggered.filter(
+    s => s.sentiment?.escalate_to_llm && !s.llm_requested_at,
+  ).length;
+
   const score = Math.min(
     100,
     triggered.length * 15
     + longTail * 5
+    + flaggedAwaitingLLM * 18
     + escalatingArc * 25
     + highContextRisk * 20
-    + requiringReview * 30
-    + deteriorating * 12
-    + volatileCount * 8,
+    + requiringReview * 30,
   );
 
   let detail: string;
   if (requiringReview > 0) {
-    detail = `${requiringReview} session${requiringReview !== 1 ? "s" : ""} flagged for staff review by context analysis`;
+    detail = `${requiringReview} session${requiringReview !== 1 ? "s" : ""} flagged for staff review by AI context analysis`;
   } else if (escalatingArc > 0 || highContextRisk > 0) {
-    detail = `${triggered.length} triggered session${triggered.length !== 1 ? "s" : ""} — ${escalatingArc + highContextRisk} showing concerning behavioural arc`;
-  } else if (deteriorating > 0 || volatileCount > 0) {
-    detail = `${triggered.length} triggered session${triggered.length !== 1 ? "s" : ""} — ${deteriorating + volatileCount} with unstable sentiment trajectory`;
+    detail = `${llmRan.length} session${llmRan.length !== 1 ? "s" : ""} analysed — ${escalatingArc + highContextRisk} showing concerning behavioural arc`;
+  } else if (flaggedAwaitingLLM > 0) {
+    detail = `${flaggedAwaitingLLM} session${flaggedAwaitingLLM !== 1 ? "s" : ""} flagged by sentiment — awaiting staff-initiated AI analysis`;
   } else if (longTail > 0) {
     detail = `${triggered.length} triggered session${triggered.length !== 1 ? "s" : ""} with ${totalFollowups} follow-up message${totalFollowups !== 1 ? "s" : ""} (${longTail} sustained)`;
   } else {

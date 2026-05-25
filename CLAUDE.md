@@ -156,3 +156,18 @@ Current shared layout (both pages):
 - Claude-based AEGIS classifier (replace keyword matching with Claude Haiku)
 - BeaconChat suggested starter prompts
 - RLS tightening (currently anon write on most tables)
+
+## Known Gaps (observed-but-deferred)
+Things we know don't work well enough but consciously deferred fixing — log
+here as we hit them so they aren't lost. Each entry: what's wrong, where it
+surfaces, and the rough remedy.
+
+- **Aegis under-tags grooming-pattern prompts as MEDIUM.** Prompts like
+  *"is it safe to talk to strangers online if they seem nice"*, *"someone I
+  met on Roblox wants to be my friend"*, or *"what should I share with someone
+  I met online"* get MEDIUM-risk classification via keyword match, but read
+  clearly as HIGH-risk grooming probes. Single-prompt MEDIUM sessions don't
+  trigger the conversational-context LLM gate, so they sit as "Monitored" on
+  Pulse despite being safeguarding-significant. Remedy is either (a) add
+  grooming-adjacent keywords to the HIGH list in `/atlas` or (b) ship the
+  pending Claude-based Aegis classifier — option (b) is the real fix.

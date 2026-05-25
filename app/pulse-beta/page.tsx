@@ -87,16 +87,19 @@ async function fetchAcknowledgements(schoolId: string): Promise<PulseAcknowledge
 async function fetchSessionAnalyses(schoolId: string): Promise<SessionAnalysis[]> {
   const { data, error } = await supabase
     .from("beacon_session_analysis")
-    .select("session_id,escalated_to_llm,sentiment_score,sentiment_messages,sentiment_trend,context_risk,sentiment_arc,concern_summary,requires_review,reasoning,behavioural_indicators,analyzed_at")
+    .select("session_id,escalated_to_llm,sentiment_score,sentiment_messages,sentiment_trend,llm_requested_by,llm_requested_at,context_risk,sentiment_arc,concern_summary,requires_review,reasoning,behavioural_indicators,analyzed_at")
     .eq("school_id", schoolId)
     .order("analyzed_at", { ascending: false });
   if (error || !data) return [];
   return data as SessionAnalysis[];
 }
 
-// Cap per page load so a fresh DB with many triggered sessions doesn't fan
-// out into a wall of LLM calls. Anything we skip gets picked up next refresh.
-const ANALYSIS_BUDGET_PER_LOAD = 5;
+// Cap per page load. Each call now only runs the local sentiment pre-filter
+// + a Supabase insert (no LLM, no API cost), so this is just throttling DB
+// writes rather than money. Sessions are processed in parallel batches
+// below, so even large caps drain in a few seconds on first load.
+const ANALYSIS_BUDGET_PER_LOAD = 500;
+const ANALYSIS_CONCURRENCY     = 10;
 
 async function insertAcknowledgement(payload: {
   student_id:        string;
@@ -310,25 +313,64 @@ const TREND_STYLE: Record<string, { label: string; color: string; bg: string }> 
   stable:        { label: "→ stable",          color: "text-slate-500",   bg: "bg-slate-100"   },
 };
 
+// Aegis-category for a whole session: highest risk across its events.
+type SessionRiskLevel = "high" | "medium" | "low";
+function sessionRiskLevel(s: ConversationSession<any>): SessionRiskLevel {
+  let level: SessionRiskLevel = "low";
+  for (const e of s.events) {
+    if (e.risk === "high" || e.risk === "critical") return "high";
+    if (e.risk === "medium") level = "medium";
+  }
+  return level;
+}
+
+const RISK_GROUP_STYLE: Record<SessionRiskLevel, { label: string; badge: string }> = {
+  high:   { label: "HIGH RISK",   badge: "bg-red-100 text-red-700"        },
+  medium: { label: "MEDIUM RISK", badge: "bg-amber-100 text-amber-700"    },
+  low:    { label: "LOW RISK",    badge: "bg-slate-100 text-slate-500"    },
+};
+
 function SessionCard({
   session,
   analysis,
+  onRequestLLM,
+  hideRunAI = false,
 }: {
-  session:  ConversationSession<any>;
-  analysis: SessionAnalysis | undefined;
+  session:      ConversationSession<any>;
+  analysis:     SessionAnalysis | undefined;
+  onRequestLLM: (session: ConversationSession<any>) => Promise<void>;
+  hideRunAI?:   boolean;
 }) {
-  const [open, setOpen]   = useState(false);
-  const needsReview   = !!analysis?.requires_review;
-  const ctxHigh       = analysis?.context_risk === "high";
-  const arc           = analysis?.sentiment_arc ? ARC_STYLE[analysis.sentiment_arc] : null;
-  const sentimentRan  = !!analysis;
-  const llmRan        = !!analysis?.escalated_to_llm;
-  const trend         = session.sentiment?.trend;
-  const trendStyle    = trend ? TREND_STYLE[trend] : null;
+  const [open, setOpen]     = useState(false);
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
+  const needsReview    = !!analysis?.requires_review;
+  const ctxHigh        = analysis?.context_risk === "high";
+  const arc            = analysis?.sentiment_arc ? ARC_STYLE[analysis.sentiment_arc] : null;
+  const sentimentRan   = !!analysis;
+  const llmRan         = !!analysis?.llm_requested_at;
+  const flaggedForLLM  = !!analysis?.escalated_to_llm && !llmRan;
+  const trend          = session.sentiment?.trend;
+  const trendStyle     = trend ? TREND_STYLE[trend] : null;
+
+  const handleRunLLM = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (running || llmRan) return;
+    setRunning(true);
+    setRunError(null);
+    try {
+      await onRequestLLM(session);
+    } catch (err: any) {
+      setRunError(err?.message || "Failed to run analysis");
+    } finally {
+      setRunning(false);
+    }
+  };
 
   let borderColor = "#e2e8f0";          // slate-200 — quiet default
   if (needsReview)                                borderColor = "#DC2626";
   else if (ctxHigh)                               borderColor = "#F59E0B";
+  else if (flaggedForLLM)                         borderColor = "#F59E0B";  // sentiment flag, awaiting review
   else if (trend === "deteriorating")             borderColor = "#F59E0B";
   else if (trend === "volatile")                  borderColor = "#FB923C";
   else if (session.has_trigger)                   borderColor = "#94a3b8";
@@ -371,6 +413,11 @@ function SessionCard({
                 Context concern
               </span>
             )}
+            {flaggedForLLM && (
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                Context concern
+              </span>
+            )}
             {arc && (
               <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${arc.bg} ${arc.color}`}>
                 {arc.label}
@@ -381,7 +428,7 @@ function SessionCard({
                 {trendStyle.label}
               </span>
             )}
-            {sentimentRan && !llmRan && (
+            {sentimentRan && !flaggedForLLM && !llmRan && (
               <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-cyan-50 text-cyan-700">
                 Monitored
               </span>
@@ -418,6 +465,38 @@ function SessionCard({
           </div>
         )}
       </button>
+
+      {/* Manual LLM trigger — only on sentiment-flagged sessions where the
+          teacher hasn't yet requested AI analysis. Button label is explicit
+          so staff own the decision to invoke AI summarisation. Hidden on
+          LOW-category sessions and single-prompt sessions: no conversational
+          arc for the LLM to read, just the Aegis-classified trigger itself. */}
+      {flaggedForLLM && !hideRunAI && session.events.length >= 2 && (
+        <div className="px-4 py-2.5 border-t border-slate-100 bg-amber-50/40 flex items-center justify-between gap-3 flex-wrap">
+          <div className="text-xs text-slate-600">
+            <span className="font-semibold text-amber-700">Sentiment flagged this session.</span>{" "}
+            AI context analysis is available on request.
+          </div>
+          <div className="flex items-center gap-2">
+            {runError && <span className="text-xs text-red-600">{runError}</span>}
+            <button
+              onClick={handleRunLLM}
+              disabled={running}
+              className="text-xs font-semibold text-white bg-[#06B6D4] px-3 py-1.5 rounded-xl hover:bg-cyan-600 disabled:opacity-50 transition-all"
+            >
+              {running ? "Running…" : "🤖 Run AI context analysis"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Audit footer once LLM has run */}
+      {llmRan && analysis?.llm_requested_by && analysis?.llm_requested_at && (
+        <div className="px-4 py-1.5 border-t border-slate-100 bg-slate-50/60 text-[10px] text-slate-400">
+          AI analysis requested by {analysis.llm_requested_by} ·{" "}
+          {new Date(analysis.llm_requested_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+        </div>
+      )}
 
       {/* Expanded — full event list with trigger highlighted */}
       {open && (
@@ -461,17 +540,69 @@ function SessionCard({
   );
 }
 
+// ── Session group (collapsible, one per Aegis risk level) ────────────────────
+function SessionGroup({
+  level,
+  sessions,
+  analysesById,
+  onRequestLLM,
+  defaultOpen,
+}: {
+  level:        SessionRiskLevel;
+  sessions:     ConversationSession<any>[];
+  analysesById: Map<string, SessionAnalysis>;
+  onRequestLLM: (s: ConversationSession<any>) => Promise<void>;
+  defaultOpen:  boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  if (sessions.length === 0) return null;
+  const cfg = RISK_GROUP_STYLE[level];
+
+  return (
+    <div className="rounded-xl border border-slate-100 overflow-hidden bg-white">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-50 transition-colors"
+      >
+        <div className="flex items-center gap-3">
+          <span className={`text-[11px] font-bold tracking-wide px-2.5 py-1 rounded-full ${cfg.badge}`}>
+            {cfg.label}
+          </span>
+          <span className="text-sm text-slate-500">{sessions.length} session{sessions.length !== 1 ? "s" : ""}</span>
+        </div>
+        <span className="text-slate-400 text-sm">{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && (
+        <div className="px-3 pb-3 space-y-2">
+          {sessions.map(s => (
+            <SessionCard
+              key={s.session_id}
+              session={s}
+              analysis={analysesById.get(s.session_id)}
+              onRequestLLM={onRequestLLM}
+              hideRunAI={level === "low"}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Student detail ────────────────────────────────────────────────────────────
 function StudentDetail({
   pulse,
   events,
   analyses,
   onAcknowledge,
+  onRequestLLM,
 }: {
   pulse:         StudentPulseV3;
   events:        any[];
   analyses:      SessionAnalysis[];
   onAcknowledge: (action: AcknowledgeAction, notes: string) => Promise<void>;
+  onRequestLLM:  (session: ConversationSession<any>) => Promise<void>;
 }) {
   const alert = ALERT[pulse.alert_level];
   const trend = TREND_DIR[pulse.trend_direction];
@@ -537,6 +668,13 @@ function StudentDetail({
     () => new Map(analyses.map(a => [a.session_id, a])),
     [analyses],
   );
+
+  // Group by Aegis-category (highest risk across the session's events).
+  const groupedSessions = useMemo(() => {
+    const groups: Record<SessionRiskLevel, ConversationSession<any>[]> = { high: [], medium: [], low: [] };
+    for (const s of sessions) groups[sessionRiskLevel(s)].push(s);
+    return groups;
+  }, [sessions]);
 
   return (
     <div className="flex flex-col h-full overflow-auto">
@@ -704,10 +842,10 @@ function StudentDetail({
               ⬇ PDF Report
             </button>
           </div>
-          <div className="space-y-2">
-            {sessions.map(s => (
-              <SessionCard key={s.session_id} session={s} analysis={analysesById.get(s.session_id)} />
-            ))}
+          <div className="space-y-3">
+            <SessionGroup level="high"   sessions={groupedSessions.high}   analysesById={analysesById} onRequestLLM={onRequestLLM} defaultOpen={true} />
+            <SessionGroup level="medium" sessions={groupedSessions.medium} analysesById={analysesById} onRequestLLM={onRequestLLM} defaultOpen={true} />
+            <SessionGroup level="low"    sessions={groupedSessions.low}    analysesById={analysesById} onRequestLLM={onRequestLLM} defaultOpen={false} />
             {sessions.length === 0 && (
               <div className="text-sm text-slate-400 text-center py-6">No sessions found</div>
             )}
@@ -779,45 +917,57 @@ function PulseBetaPageContent() {
     analysisFiredRef.current = true;
 
     const analysedIds = new Set(analyses.map(a => a.session_id));
-    const cutoff      = Date.now() - 30 * 86400000;  // only recent sessions matter for scoring
-    const candidates  = groupSessions(events)
+    // Score every triggered+settled session regardless of age. The signal
+    // itself only considers near-term sessions, but historical scoring is
+    // cheap (rule-based + insert) and stops UI "Pending analysis" badges
+    // from sitting forever on old triggered sessions.
+    const candidates = groupSessions(events)
       .filter(s => s.has_trigger
                 && isSettled(s)
-                && !analysedIds.has(s.session_id)
-                && new Date(s.ended_at).getTime() > cutoff)
+                && !analysedIds.has(s.session_id))
       .slice(0, ANALYSIS_BUDGET_PER_LOAD);
 
     if (!candidates.length) return;
 
+    const slimEvent = (e: any) => ({
+      created_at: e.created_at,
+      prompt:     e.prompt,
+      risk:       e.risk,
+      blocked:    e.blocked,
+      matched:    e.matched,
+    });
+
+    const scoreOne = async (s: typeof candidates[number]) => {
+      try {
+        const res = await fetch("/api/session-analysis", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id:          s.session_id,
+            school_id:           SCHOOL_ID,
+            student_id:          s.student_id,
+            platform:            s.platform,
+            started_at:          s.started_at,
+            ended_at:            s.ended_at,
+            events:              s.events.map(slimEvent),
+            post_trigger_events: s.context_window_events.map(slimEvent),
+          }),
+        });
+        return res.ok;
+      } catch {
+        return false;
+      }
+    };
+
     (async () => {
       let analysedAny = false;
-      for (const s of candidates) {
-        try {
-          const slimEvent = (e: any) => ({
-            created_at: e.created_at,
-            prompt:     e.prompt,
-            risk:       e.risk,
-            blocked:    e.blocked,
-            matched:    e.matched,
-          });
-          const res = await fetch("/api/session-analysis", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              session_id:          s.session_id,
-              school_id:           SCHOOL_ID,
-              student_id:          s.student_id,
-              platform:            s.platform,
-              started_at:          s.started_at,
-              ended_at:            s.ended_at,
-              events:              s.events.map(slimEvent),
-              post_trigger_events: s.context_window_events.map(slimEvent),
-            }),
-          });
-          if (res.ok) analysedAny = true;
-        } catch {
-          // Skip on failure — picked up next refresh.
-        }
+      // Limited concurrency: fire ANALYSIS_CONCURRENCY in parallel, wait for
+      // them, then the next batch. Avoids hammering Supabase but is ~10x
+      // faster than sequential.
+      for (let i = 0; i < candidates.length; i += ANALYSIS_CONCURRENCY) {
+        const batch  = candidates.slice(i, i + ANALYSIS_CONCURRENCY);
+        const oks    = await Promise.all(batch.map(scoreOne));
+        if (oks.some(Boolean)) analysedAny = true;
       }
       if (analysedAny) setAnalysesVersion(v => v + 1);
     })();
@@ -856,6 +1006,32 @@ function PulseBetaPageContent() {
     { key: "medium"   as const, label: "Medium"   },
     { key: "low"      as const, label: "Low"      },
   ];
+
+  const requestLLMForSession = useCallback(async (s: ConversationSession<any>) => {
+    const { data: { session: authSession } } = await supabase.auth.getSession();
+    const email = authSession?.user?.email ?? "unknown";
+    const slim = (e: any) => ({
+      created_at: e.created_at,
+      prompt:     e.prompt,
+      risk:       e.risk,
+      blocked:    e.blocked,
+      matched:    e.matched,
+    });
+    const res = await fetch("/api/session-analysis/run-llm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id:   s.session_id,
+        requested_by: email,
+        events:       s.events.map(slim),
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body?.error || `Request failed (${res.status})`);
+    }
+    setAnalysesVersion(v => v + 1);
+  }, []);
 
   const acknowledgeSelected = useCallback(async (action: AcknowledgeAction, notes: string) => {
     if (!selected) return;
@@ -952,7 +1128,7 @@ function PulseBetaPageContent() {
           {/* Right detail */}
           <div className="flex-1 bg-white overflow-auto">
             {selected
-              ? <StudentDetail pulse={selected} events={events} analyses={analyses} onAcknowledge={acknowledgeSelected} />
+              ? <StudentDetail pulse={selected} events={events} analyses={analyses} onAcknowledge={acknowledgeSelected} onRequestLLM={requestLLMForSession} />
               : <div className="flex items-center justify-center h-full text-slate-400 text-sm">Select a student</div>
             }
           </div>
