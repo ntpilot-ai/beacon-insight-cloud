@@ -22,6 +22,14 @@ import {
   type SessionAnalysis,
   type ConversationSession,
 } from "@/lib/sessions";
+import {
+  SNOOZE_DURATIONS,
+  expiresAtFor,
+  activeSnoozeFor,
+  snoozeLabel,
+  type PulseSnooze,
+  type SnoozeDuration,
+} from "@/lib/snooze";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 
@@ -109,6 +117,47 @@ interface TriageResultRow {
   notify_immediately: boolean;
   reasoning:          string | null;
   requested_by:       string | null;
+}
+
+async function fetchSnoozes(schoolId: string): Promise<PulseSnooze[]> {
+  // Fetch any rows touched recently: still-active snoozes for queue gating,
+  // plus rows broken in the last 24h so the re-entry badge can render.
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from("pulse_snooze")
+    .select("id,school_id,student_id,snoozed_by,snoozed_at,expires_at,duration_label,reason,broken_early,broken_at,broken_reason")
+    .eq("school_id", schoolId)
+    .or(`broken_early.eq.false,broken_at.gte.${since}`)
+    .order("snoozed_at", { ascending: false });
+  if (error || !data) return [];
+  return data as PulseSnooze[];
+}
+
+async function insertSnooze(payload: {
+  student_id:     string;
+  duration:       SnoozeDuration;
+  reason:         string;
+}): Promise<boolean> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const email = session?.user?.email ?? "unknown";
+  const { error } = await supabase.from("pulse_snooze").insert({
+    school_id:      SCHOOL_ID,
+    student_id:     payload.student_id,
+    snoozed_by:     email,
+    expires_at:     expiresAtFor(payload.duration),
+    duration_label: payload.duration,
+    reason:         payload.reason || null,
+  });
+  return !error;
+}
+
+async function breakSnoozeRow(snoozeId: string, reason: string): Promise<boolean> {
+  const { error } = await supabase.from("pulse_snooze").update({
+    broken_early:  true,
+    broken_at:     new Date().toISOString(),
+    broken_reason: reason,
+  }).eq("id", snoozeId);
+  return !error;
 }
 
 async function fetchTodaysTriage(schoolId: string): Promise<TriageResultRow[]> {
@@ -897,18 +946,108 @@ const TRIAGE_STYLE: Record<TriageLevel, { label: string; ring: string; bar: stri
   silent_monitoring:  { label: "MONITORING",   ring: "border-slate-200",   bar: "#94A3B8", chip: "bg-slate-100 text-slate-500",          sort: 4 },
 };
 
+function SnoozeDropdown({
+  onSnooze,
+  pending,
+}: {
+  onSnooze: (duration: SnoozeDuration, reason: string) => Promise<void>;
+  pending:  boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [duration, setDuration] = useState<SnoozeDuration>("24h");
+  const [reason, setReason] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const submit = async () => {
+    await onSnooze(duration, reason);
+    setOpen(false);
+    setReason("");
+    setDuration("24h");
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        disabled={pending}
+        className="text-xs font-semibold text-slate-600 border border-slate-200 px-3 py-1.5 rounded-xl hover:border-[#06B6D4] hover:text-[#06B6D4] disabled:opacity-50 transition-all"
+      >
+        Snooze ▾
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-1 w-72 z-20 bg-white border border-slate-200 rounded-2xl shadow-lg p-3 space-y-2">
+          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Snooze duration</div>
+          <div className="grid grid-cols-2 gap-1">
+            {SNOOZE_DURATIONS.map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => setDuration(opt.value)}
+                className={`text-xs px-2 py-1.5 rounded-lg border text-left ${
+                  duration === opt.value
+                    ? "border-[#06B6D4] bg-cyan-50 text-[#06B6D4] font-semibold"
+                    : "border-slate-200 text-slate-600 hover:border-slate-300"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <textarea
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            placeholder="Optional note (e.g. discussed with form tutor)"
+            rows={2}
+            className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20 resize-none"
+          />
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              onClick={() => setOpen(false)}
+              className="text-xs text-slate-500 px-3 py-1.5 rounded-lg hover:text-slate-700"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={submit}
+              disabled={pending}
+              className="text-xs font-semibold text-white bg-[#06B6D4] px-3 py-1.5 rounded-lg hover:bg-cyan-600 disabled:opacity-50"
+            >
+              {pending ? "Snoozing…" : "Confirm snooze"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TriageCard({
   row,
   pulse,
+  brokenSnooze,
   onReview,
+  onSnooze,
   onViewProfile,
   reviewing,
+  snoozing,
 }: {
   row:           TriageResultRow;
   pulse?:        StudentPulseV3;
+  brokenSnooze?: PulseSnooze;
   onReview:      (studentId: string) => Promise<void>;
+  onSnooze:      (studentId: string, duration: SnoozeDuration, reason: string) => Promise<void>;
   onViewProfile: (studentId: string) => void;
   reviewing:     boolean;
+  snoozing:      boolean;
 }) {
   const style = TRIAGE_STYLE[row.triage];
   const cats  = pulse?.categories.slice(0, 3) ?? [];
@@ -924,6 +1063,14 @@ function TriageCard({
           {row.notify_immediately && (
             <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-600 text-white">
               📣 Notify
+            </span>
+          )}
+          {brokenSnooze && (
+            <span
+              className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-200 text-amber-900"
+              title={brokenSnooze.broken_reason ?? "Snooze broken by override condition"}
+            >
+              🔔 Re-surfaced from snooze
             </span>
           )}
           {pulse?.re_emergence && (
@@ -944,6 +1091,12 @@ function TriageCard({
         </div>
       </div>
 
+      {brokenSnooze?.broken_reason && (
+        <p className="text-[11px] text-amber-700 mb-2 italic">
+          Re-surfaced: {brokenSnooze.broken_reason}
+        </p>
+      )}
+
       {row.concern_summary && (
         <p className="text-sm text-slate-700 mb-2 leading-snug">{row.concern_summary}</p>
       )}
@@ -961,13 +1114,10 @@ function TriageCard({
         >
           {reviewing ? "Marking…" : "Mark reviewed"}
         </button>
-        <button
-          disabled
-          title="Snooze available in next iteration"
-          className="text-xs font-semibold text-slate-400 border border-slate-200 px-3 py-1.5 rounded-xl cursor-not-allowed"
-        >
-          Snooze ▾
-        </button>
+        <SnoozeDropdown
+          onSnooze={(duration, reason) => onSnooze(row.student_id, duration, reason)}
+          pending={snoozing}
+        />
         <button
           onClick={() => onViewProfile(row.student_id)}
           className="text-xs font-semibold text-slate-500 border border-slate-200 px-3 py-1.5 rounded-xl hover:border-[#06B6D4] hover:text-[#06B6D4] transition-all"
@@ -982,24 +1132,34 @@ function TriageCard({
 function TriageQueue({
   results,
   pulsesById,
+  snoozes,
   loading,
   running,
   runError,
   onRunTriage,
   onReview,
+  onSnooze,
+  onEndSnoozeEarly,
   onViewProfile,
   reviewingId,
+  snoozingId,
 }: {
-  results:       TriageResultRow[];
-  pulsesById:    Map<string, StudentPulseV3>;
-  loading:       boolean;
-  running:       boolean;
-  runError:      string | null;
-  onRunTriage:   (force: boolean) => void;
-  onReview:      (studentId: string) => Promise<void>;
-  onViewProfile: (studentId: string) => void;
-  reviewingId:   string | null;
+  results:          TriageResultRow[];
+  pulsesById:       Map<string, StudentPulseV3>;
+  snoozes:          PulseSnooze[];
+  loading:          boolean;
+  running:          boolean;
+  runError:         string | null;
+  onRunTriage:      (force: boolean) => void;
+  onReview:         (studentId: string) => Promise<void>;
+  onSnooze:         (studentId: string, duration: SnoozeDuration, reason: string) => Promise<void>;
+  onEndSnoozeEarly: (snoozeId: string) => Promise<void>;
+  onViewProfile:    (studentId: string) => void;
+  reviewingId:      string | null;
+  snoozingId:       string | null;
 }) {
+  const now = Date.now();
+
   const sorted = useMemo(() =>
     [...results].sort((a, b) => {
       if (a.notify_immediately !== b.notify_immediately) return a.notify_immediately ? -1 : 1;
@@ -1008,10 +1168,47 @@ function TriageQueue({
     [results],
   );
 
-  const urgent      = sorted.filter(r => r.notify_immediately || r.triage === "urgent");
-  const actionable  = sorted.filter(r => !urgent.includes(r) && r.triage !== "silent_monitoring");
-  const monitoring  = sorted.filter(r => r.triage === "silent_monitoring");
+  // Index active snoozes per student so the actionable queue can hide them.
+  const activeSnoozeByStudent = useMemo(() => {
+    const map = new Map<string, PulseSnooze>();
+    for (const s of snoozes) {
+      const active = activeSnoozeFor(s.student_id, snoozes, now);
+      if (active && !map.has(s.student_id)) map.set(s.student_id, active);
+    }
+    return map;
+  }, [snoozes, now]);
+
+  // Index snoozes broken in the last 24h so re-entered cards get a badge.
+  const recentlyBrokenByStudent = useMemo(() => {
+    const cutoff = now - 24 * 60 * 60 * 1000;
+    const map = new Map<string, PulseSnooze>();
+    for (const s of snoozes) {
+      if (!s.broken_early || !s.broken_at) continue;
+      if (new Date(s.broken_at).getTime() < cutoff) continue;
+      const existing = map.get(s.student_id);
+      if (!existing || new Date(s.broken_at).getTime() > new Date(existing.broken_at!).getTime()) {
+        map.set(s.student_id, s);
+      }
+    }
+    return map;
+  }, [snoozes, now]);
+
+  const visibleResults = useMemo(
+    () => sorted.filter(r => !activeSnoozeByStudent.has(r.student_id)),
+    [sorted, activeSnoozeByStudent],
+  );
+
+  const urgent      = visibleResults.filter(r => r.notify_immediately || r.triage === "urgent");
+  const actionable  = visibleResults.filter(r => !urgent.includes(r) && r.triage !== "silent_monitoring");
+  const monitoring  = visibleResults.filter(r => r.triage === "silent_monitoring");
   const [monitorOpen, setMonitorOpen] = useState(false);
+  const [snoozedOpen, setSnoozedOpen] = useState(false);
+
+  const snoozedList = useMemo(
+    () => Array.from(activeSnoozeByStudent.values())
+      .sort((a, b) => new Date(b.snoozed_at).getTime() - new Date(a.snoozed_at).getTime()),
+    [activeSnoozeByStudent],
+  );
 
   const attentionCount = urgent.length + actionable.length;
   const greeting       = greetingForNow();
@@ -1030,7 +1227,7 @@ function TriageQueue({
           <p className="text-xs text-slate-500 mt-1">
             {results.length === 0
               ? "Today's triage hasn't been run yet."
-              : `${results.length} student${results.length === 1 ? "" : "s"} assessed today · ${monitoring.length} in silent monitoring`}
+              : `${results.length} student${results.length === 1 ? "" : "s"} assessed today · ${monitoring.length} in silent monitoring · ${snoozedList.length} snoozed`}
           </p>
         </div>
         <div className="flex flex-col items-end gap-1">
@@ -1064,9 +1261,12 @@ function TriageQueue({
                 key={r.id}
                 row={r}
                 pulse={pulsesById.get(r.student_id)}
+                brokenSnooze={recentlyBrokenByStudent.get(r.student_id)}
                 onReview={onReview}
+                onSnooze={onSnooze}
                 onViewProfile={onViewProfile}
                 reviewing={reviewingId === r.student_id}
+                snoozing={snoozingId === r.student_id}
               />
             ))}
           </div>
@@ -1081,9 +1281,12 @@ function TriageQueue({
               key={r.id}
               row={r}
               pulse={pulsesById.get(r.student_id)}
+              brokenSnooze={recentlyBrokenByStudent.get(r.student_id)}
               onReview={onReview}
+              onSnooze={onSnooze}
               onViewProfile={onViewProfile}
               reviewing={reviewingId === r.student_id}
+              snoozing={snoozingId === r.student_id}
             />
           ))}
         </div>
@@ -1098,6 +1301,55 @@ function TriageQueue({
       {!loading && results.length > 0 && attentionCount === 0 && (
         <div className="text-center py-8 text-slate-400 text-sm border border-dashed border-slate-200 rounded-2xl">
           No students require attention today. All active students are in silent monitoring.
+        </div>
+      )}
+
+      {/* Snoozed (collapsed) */}
+      {snoozedList.length > 0 && (
+        <div className="rounded-2xl border border-slate-100 bg-white">
+          <button
+            onClick={() => setSnoozedOpen(o => !o)}
+            className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-50 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-100 text-cyan-700">💤 SNOOZED</span>
+              <span className="text-xs text-slate-500">
+                {snoozedList.length} student{snoozedList.length === 1 ? "" : "s"} — hidden from queue
+              </span>
+            </div>
+            <span className="text-slate-400 text-sm">{snoozedOpen ? "▲" : "▼"}</span>
+          </button>
+          {snoozedOpen && (
+            <div className="px-4 pb-4 space-y-2">
+              {snoozedList.map(s => (
+                <div key={s.id} className="text-xs text-slate-600 px-3 py-2 rounded-lg bg-cyan-50/50 border border-cyan-100 flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                    <span className="font-semibold text-slate-700">{s.student_id}</span>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-white text-cyan-700 border border-cyan-200">
+                      {snoozeLabel(s, now)}
+                    </span>
+                    <span className="text-slate-400 text-[11px]">by {s.snoozed_by}</span>
+                    {s.reason && <span className="text-slate-400 text-[11px] italic truncate max-w-md">"{s.reason}"</span>}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => onEndSnoozeEarly(s.id)}
+                      className="text-[11px] text-slate-500 hover:text-red-600 px-2 py-1 rounded-lg"
+                      title="End this snooze and return the student to the queue"
+                    >
+                      End snooze
+                    </button>
+                    <button
+                      onClick={() => onViewProfile(s.student_id)}
+                      className="text-[11px] text-slate-500 hover:text-[#06B6D4]"
+                    >
+                      View →
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -1189,6 +1441,9 @@ function PulseBetaPageContent() {
   const [triageRunning, setTriageRunning] = useState(false);
   const [triageError, setTriageError] = useState<string | null>(null);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [snoozes, setSnoozes] = useState<PulseSnooze[]>([]);
+  const [snoozesVersion, setSnoozesVersion] = useState(0);
+  const [snoozingId, setSnoozingId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAllEvents({ ascending: true })
@@ -1206,6 +1461,10 @@ function PulseBetaPageContent() {
   useEffect(() => {
     fetchTodaysTriage(SCHOOL_ID).then(setTriage);
   }, [triageVersion]);
+
+  useEffect(() => {
+    fetchSnoozes(SCHOOL_ID).then(setSnoozes);
+  }, [snoozesVersion]);
 
   // Step 4: when events arrive, kick off LLM analysis for any triggered,
   // settled session that's still unanalysed. Capped per load. Sequential —
@@ -1356,11 +1615,34 @@ function PulseBetaPageContent() {
         setTriageError(`${body.succeeded} processed, ${body.failed} failed (see server logs)`);
       }
       setTriageVersion(v => v + 1);
+      // A triage run may have broken active snoozes via override conditions;
+      // refresh so the snoozed section and re-entry badges reflect reality.
+      setSnoozesVersion(v => v + 1);
     } catch (err: any) {
       setTriageError(err?.message || "Failed to run triage");
     } finally {
       setTriageRunning(false);
     }
+  }, []);
+
+  const snoozeFromQueue = useCallback(async (studentId: string, duration: SnoozeDuration, reason: string) => {
+    setSnoozingId(studentId);
+    try {
+      const ok = await insertSnooze({ student_id: studentId, duration, reason });
+      if (ok) {
+        setSnoozesVersion(v => v + 1);
+        // Drop today's triage row for this student locally so the queue
+        // hides them immediately without waiting for the snoozes refetch.
+        setTriage(prev => prev.filter(r => r.student_id !== studentId));
+      }
+    } finally {
+      setSnoozingId(null);
+    }
+  }, []);
+
+  const endSnoozeEarly = useCallback(async (snoozeId: string) => {
+    const ok = await breakSnoozeRow(snoozeId, "Ended early by staff");
+    if (ok) setSnoozesVersion(v => v + 1);
   }, []);
 
   const reviewFromQueue = useCallback(async (studentId: string) => {
@@ -1464,13 +1746,17 @@ function PulseBetaPageContent() {
             <TriageQueue
               results={triage}
               pulsesById={pulsesById}
+              snoozes={snoozes}
               loading={loading}
               running={triageRunning}
               runError={triageError}
               onRunTriage={runTriage}
               onReview={reviewFromQueue}
+              onSnooze={snoozeFromQueue}
+              onEndSnoozeEarly={endSnoozeEarly}
               onViewProfile={viewProfileFromQueue}
               reviewingId={reviewingId}
+              snoozingId={snoozingId}
             />
           </div>
         ) : (

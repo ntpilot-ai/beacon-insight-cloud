@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { calculateAllPulsesV3, type BeaconEvent, type PulseAcknowledgement, type StudentPulseV3 } from "@/lib/pulse_engine_v3";
 import { groupSessions, mergeAnalyses, type SessionAnalysis } from "@/lib/sessions";
 import { buildTriagePrompt, parseTriageVerdict, isActiveStudent, TRIAGE_SYSTEM_PROMPT, type TriageResult } from "@/lib/triage";
+import { activeSnoozeFor, shouldBreakSnooze, type PulseSnooze } from "@/lib/snooze";
 
 /**
  * POST /api/triage/run
@@ -54,10 +55,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: "no_events", processed: 0, triaged: [] });
   }
 
-  const [acks, analyses, existingToday] = await Promise.all([
+  const [acks, analyses, existingToday, snoozes] = await Promise.all([
     fetchAcks(supabase, school_id),
     fetchAnalyses(supabase, school_id, cutoff),
     fetchTodaysTriage(supabase, school_id, todayUtc),
+    fetchSnoozes(supabase, school_id),
   ]);
 
   // ── Score everyone with the v3 engine, then filter ──
@@ -67,12 +69,43 @@ export async function POST(req: NextRequest) {
   const eventsByStudent = bucket(events, e => e.student_id);
   const alreadyTriaged  = new Set(existingToday.map(t => t.student_id));
 
-  const candidates = pulses.filter(p => {
+  // Snooze gating + override evaluation. For each active student we decide:
+  //   - candidate:    run the LLM
+  //   - snoozed:      skip the LLM, no DB write
+  //   - break-then-run: snooze had an override fire — mark broken_early,
+  //                     then run the LLM (counted as candidate)
+  const candidates: StudentPulseV3[] = [];
+  const skippedSnoozed: { student_id: string; expires_at: string | null }[] = [];
+  const brokenSnoozes:  { student_id: string; snooze_id: string; reason: string }[] = [];
+
+  for (const p of pulses) {
     const evs = eventsByStudent.get(p.student_id) || [];
-    if (!isActiveStudent(evs, now))                return false;
-    if (!force && alreadyTriaged.has(p.student_id)) return false;
-    return true;
-  });
+    if (!isActiveStudent(evs, now))                continue;
+    if (!force && alreadyTriaged.has(p.student_id)) continue;
+
+    const snooze = activeSnoozeFor(p.student_id, snoozes, now);
+    if (snooze) {
+      const breakReason = shouldBreakSnooze(p, snooze);
+      if (breakReason) {
+        brokenSnoozes.push({ student_id: p.student_id, snooze_id: snooze.id, reason: breakReason });
+        candidates.push(p);
+      } else {
+        skippedSnoozed.push({ student_id: p.student_id, expires_at: snooze.expires_at });
+      }
+    } else {
+      candidates.push(p);
+    }
+  }
+
+  // Mark broken snoozes up-front so the UI reflects the new state even if
+  // some Haiku calls fail later in the run.
+  for (const b of brokenSnoozes) {
+    await supabase.from("pulse_snooze").update({
+      broken_early:  true,
+      broken_at:     new Date(now).toISOString(),
+      broken_reason: b.reason,
+    }).eq("id", b.snooze_id);
+  }
 
   if (candidates.length === 0) {
     return NextResponse.json({
@@ -80,6 +113,7 @@ export async function POST(req: NextRequest) {
       reason: existingToday.length > 0 ? "all_active_students_already_triaged_today" : "no_active_students",
       active_students: pulses.filter(p => isActiveStudent(eventsByStudent.get(p.student_id) || [], now)).length,
       already_triaged_today: existingToday.length,
+      snoozed_skipped: skippedSnoozed.length,
     });
   }
 
@@ -134,6 +168,8 @@ export async function POST(req: NextRequest) {
     processed: candidates.length,
     succeeded: results.length,
     failed:    failures.length,
+    snoozed_skipped: skippedSnoozed.length,
+    snoozes_broken:  brokenSnoozes.length,
     triaged:   results.map(r => ({
       student_id:         r.student_id,
       triage:             r.triage,
@@ -238,6 +274,21 @@ async function fetchAnalyses(supabase: any, schoolId: string, cutoff: string): P
     .order("analyzed_at", { ascending: false });
   if (error || !data) return [];
   return data as SessionAnalysis[];
+}
+
+async function fetchSnoozes(supabase: any, schoolId: string): Promise<PulseSnooze[]> {
+  // Only fetch potentially-active rows: not broken_early, and either no
+  // expiry or expiry in the future. activeSnoozeFor still picks the most
+  // recent per student client-side.
+  const { data, error } = await supabase
+    .from("pulse_snooze")
+    .select("id,school_id,student_id,snoozed_by,snoozed_at,expires_at,duration_label,reason,broken_early,broken_at,broken_reason")
+    .eq("school_id", schoolId)
+    .eq("broken_early", false)
+    .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+    .order("snoozed_at", { ascending: false });
+  if (error || !data) return [];
+  return data as PulseSnooze[];
 }
 
 async function fetchTodaysTriage(supabase: any, schoolId: string, todayUtc: string): Promise<{ student_id: string }[]> {
