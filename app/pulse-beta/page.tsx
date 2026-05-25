@@ -217,6 +217,7 @@ async function fetchTodaysTriage(schoolId: string): Promise<TriageResultRow[]> {
     .eq("school_id", schoolId)
     .gte("assessed_at", `${today}T00:00:00Z`)
     .lte("assessed_at", `${today}T23:59:59.999Z`)
+    .is("reviewed_at", null)
     .order("assessed_at", { ascending: false });
   if (error || !data) return [];
   return data as TriageResultRow[];
@@ -3107,15 +3108,32 @@ function PulseBetaPageContent() {
     if (!pulse) return;
     setReviewingId(studentId);
     try {
+      const { data: { session: authSession } } = await supabase.auth.getSession();
+      const email = authSession?.user?.email ?? "unknown";
       const dominantCategory = pulse.categories[0]?.name ?? null;
-      const ok = await insertAcknowledgement({
-        student_id:        studentId,
-        alert_level:       pulse.alert_level,
-        dominant_category: dominantCategory,
-        action_taken:      "monitored",
-        notes:             "Marked reviewed from triage queue",
-      });
-      if (ok) {
+      const now = new Date().toISOString();
+      const today = now.slice(0, 10);
+
+      const [ackOk] = await Promise.all([
+        insertAcknowledgement({
+          student_id:        studentId,
+          alert_level:       pulse.alert_level,
+          dominant_category: dominantCategory,
+          action_taken:      "monitored",
+          notes:             "Marked reviewed from triage queue",
+        }),
+        // Mark today's triage row as reviewed so it stays out of the queue on refresh
+        supabase
+          .from("beacon_triage_results")
+          .update({ reviewed_at: now, reviewed_by: email })
+          .eq("school_id", SCHOOL_ID)
+          .eq("student_id", studentId)
+          .gte("assessed_at", `${today}T00:00:00Z`)
+          .lte("assessed_at", `${today}T23:59:59.999Z`)
+          .is("reviewed_at", null),
+      ]);
+
+      if (ackOk) {
         setAcksVersion(v => v + 1);
         setTriage(prev => prev.filter(r => r.student_id !== studentId));
       }
