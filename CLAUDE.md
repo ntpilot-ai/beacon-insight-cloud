@@ -171,3 +171,15 @@ surfaces, and the rough remedy.
   Pulse despite being safeguarding-significant. Remedy is either (a) add
   grooming-adjacent keywords to the HIGH list in `/atlas` or (b) ship the
   pending Claude-based Aegis classifier — option (b) is the real fix.
+
+- **`notify_immediately` triage verdicts don't page anyone outside the
+  dashboard.** Phase 3 step 13 in the Pulse spec calls for push/email alerts
+  to the DSL and pastoral lead whenever the triage classifier returns
+  `notify_immediately: true`. The in-app urgent banner is built and pulses
+  correctly on `/pulse-beta` Today's Queue, but the outbound transport is
+  not. If staff aren't on the dashboard when an urgent row lands, they will
+  miss it until next login. Remedy is to pick a transport (Resend / Postmark
+  / Slack webhook), add a per-school recipient-routing table (DSL email,
+  pastoral lead email, optional Slack channel), and fire from
+  `/api/triage/run` immediately after a row is upserted with
+  `notify_immediately = true`.
