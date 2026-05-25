@@ -31,6 +31,7 @@ import {
   type SnoozeDuration,
 } from "@/lib/snooze";
 import { buildWeeklySummary, type WeeklySummary } from "@/lib/weekly_summary";
+import { FEEDBACK_REASONS, type FeedbackReason, type PulseFeedback } from "@/lib/feedback";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 
@@ -120,13 +121,56 @@ interface TriageResultRow {
   requested_by:       string | null;
 }
 
+// ── Cluster types (Brief 6) ───────────────────────────────────────────────────
+
+interface ClusterTriageRow {
+  id:                 string;
+  triage:             string;
+  concern_summary:    string;
+  suggested_action:   string;
+  notify_immediately: boolean;
+  reasoning?:         string | null;
+  triaged_at:         string;
+}
+
+interface ClusterRow {
+  id:                  string;
+  school_id:           string;
+  cluster_key:         string;
+  detected_at:         string;
+  cluster_type:        "category_spike" | "coordinated_jailbreak" | "keyword_co-occurrence" | "sentiment_wave";
+  student_ids:         string[];
+  student_count:       number;
+  category:            string;
+  time_window_hours:   number;
+  group_context?:      string | null;
+  severity:            "notable" | "significant" | "critical";
+  summary:             string;
+  individual_pulses:   string[];
+  requires_review:     boolean;
+  dismissed_at?:       string | null;
+  dismissed_by?:       string | null;
+  acknowledged_at?:    string | null;
+  acknowledged_by?:    string | null;
+  acknowledged_note?:  string | null;
+  cluster_triage_results?: ClusterTriageRow[];
+}
+
+async function fetchTodayClusters(schoolId: string): Promise<ClusterRow[]> {
+  const today = new Date().toISOString().slice(0, 10);
+  const res = await fetch(`/api/clusters?school_id=${encodeURIComponent(schoolId)}&date=${today}`);
+  if (!res.ok) return [];
+  const json = await res.json();
+  return (json.clusters ?? []) as ClusterRow[];
+}
+
 async function fetchSnoozes(schoolId: string): Promise<PulseSnooze[]> {
   // Fetch any rows touched recently: still-active snoozes for queue gating,
   // plus rows broken in the last 24h so the re-entry badge can render.
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const { data, error } = await supabase
     .from("pulse_snooze")
-    .select("id,school_id,student_id,snoozed_by,snoozed_at,expires_at,duration_label,reason,broken_early,broken_at,broken_reason")
+    .select("id,school_id,student_id,snoozed_by,snoozed_at,expires_at,duration_label,reason,broken_early,broken_at,broken_reason,snooze_time_score,snooze_time_alert_level")
     .eq("school_id", schoolId)
     .or(`broken_early.eq.false,broken_at.gte.${since}`)
     .order("snoozed_at", { ascending: false });
@@ -135,19 +179,23 @@ async function fetchSnoozes(schoolId: string): Promise<PulseSnooze[]> {
 }
 
 async function insertSnooze(payload: {
-  student_id:     string;
-  duration:       SnoozeDuration;
-  reason:         string;
+  student_id:              string;
+  duration:                SnoozeDuration;
+  reason:                  string;
+  snooze_time_score?:      number;
+  snooze_time_alert_level?: string;
 }): Promise<boolean> {
   const { data: { session } } = await supabase.auth.getSession();
   const email = session?.user?.email ?? "unknown";
   const { error } = await supabase.from("pulse_snooze").insert({
-    school_id:      SCHOOL_ID,
-    student_id:     payload.student_id,
-    snoozed_by:     email,
-    expires_at:     expiresAtFor(payload.duration),
-    duration_label: payload.duration,
-    reason:         payload.reason || null,
+    school_id:               SCHOOL_ID,
+    student_id:              payload.student_id,
+    snoozed_by:              email,
+    expires_at:              expiresAtFor(payload.duration),
+    duration_label:          payload.duration,
+    reason:                  payload.reason || null,
+    snooze_time_score:       payload.snooze_time_score ?? null,
+    snooze_time_alert_level: payload.snooze_time_alert_level ?? null,
   });
   return !error;
 }
@@ -689,12 +737,14 @@ function StudentDetail({
   analyses,
   onAcknowledge,
   onRequestLLM,
+  feedbackCount = 0,
 }: {
-  pulse:         StudentPulseV3;
-  events:        any[];
-  analyses:      SessionAnalysis[];
-  onAcknowledge: (action: AcknowledgeAction, notes: string) => Promise<void>;
-  onRequestLLM:  (session: ConversationSession<any>) => Promise<void>;
+  pulse:          StudentPulseV3;
+  events:         any[];
+  analyses:       SessionAnalysis[];
+  onAcknowledge:  (action: AcknowledgeAction, notes: string) => Promise<void>;
+  onRequestLLM:   (session: ConversationSession<any>) => Promise<void>;
+  feedbackCount?: number;
 }) {
   const alert = ALERT[pulse.alert_level];
   const trend = TREND_DIR[pulse.trend_direction];
@@ -818,6 +868,14 @@ function StudentDetail({
           <span>First {new Date(pulse.first_seen).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</span>
           <span className="text-slate-300">·</span>
           <span>Last {new Date(pulse.last_seen).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>
+          {feedbackCount > 0 && (
+            <>
+              <span className="text-slate-300">·</span>
+              <span className="text-amber-600 font-semibold" title="Previous 'not a concern' submissions for this student">
+                {feedbackCount} false positive flag{feedbackCount !== 1 ? "s" : ""}
+              </span>
+            </>
+          )}
         </div>
 
         {/* Row 3 — categories + primary concern on the same line */}
@@ -1043,24 +1101,200 @@ function SnoozeDropdown({
   );
 }
 
+const UNDO_SECONDS = 10;
+
+function NotAConcernDropdown({
+  onSubmit,
+  pending,
+  studentId,
+  category,
+}: {
+  onSubmit:  (reason: FeedbackReason, notes: string) => Promise<void>;
+  pending:   boolean;
+  studentId: string;
+  category:  string | null;
+}) {
+  // Three steps after the trigger button:
+  //   form      — reason + notes selection
+  //   confirm   — "this affects only this student" warning
+  //   countdown — 10s undo window before the API write
+  //   done      — final thank-you (no further interaction)
+  const [step, setStep]     = useState<"idle" | "form" | "confirm" | "countdown" | "done">("idle");
+  const [reason, setReason] = useState<FeedbackReason>("known_student");
+  const [notes, setNotes]   = useState("");
+  const [secs, setSecs]     = useState(UNDO_SECONDS);
+  const pendingRef          = useRef<{ reason: FeedbackReason; notes: string } | null>(null);
+  const ref                 = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on outside click (only when in form/confirm steps)
+  useEffect(() => {
+    if (step !== "form" && step !== "confirm") return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setStep("idle");
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [step]);
+
+  // Countdown ticker — fires the actual API write when it hits 0
+  useEffect(() => {
+    if (step !== "countdown") return;
+    if (secs <= 0) {
+      onSubmit(pendingRef.current!.reason, pendingRef.current!.notes).then(() => setStep("done"));
+      return;
+    }
+    const id = setTimeout(() => setSecs(s => s - 1), 1000);
+    return () => clearTimeout(id);
+  }, [step, secs, onSubmit]);
+
+  const handleUndo = () => {
+    pendingRef.current = null;
+    setSecs(UNDO_SECONDS);
+    setStep("idle");
+    setReason("known_student");
+    setNotes("");
+  };
+
+  // Countdown / undo toast — rendered inline (not in a dropdown)
+  if (step === "countdown" || step === "done") {
+    return step === "done" ? (
+      <span className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-xl">
+        Thank you — this helps Pulse learn
+      </span>
+    ) : (
+      <span className="inline-flex items-center gap-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl">
+        Marked as not a concern
+        <button
+          onClick={handleUndo}
+          className="font-bold underline hover:text-amber-900"
+        >
+          Undo
+        </button>
+        <span className="text-amber-400">({secs}s)</span>
+      </span>
+    );
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setStep("form")}
+        disabled={pending}
+        className="text-xs font-semibold text-slate-600 border border-slate-200 px-3 py-1.5 rounded-xl hover:border-amber-400 hover:text-amber-700 disabled:opacity-50 transition-all"
+      >
+        Not a concern ▾
+      </button>
+
+      {/* Form step */}
+      {step === "form" && (
+        <div className="absolute right-0 mt-1 w-80 z-20 bg-white border border-slate-200 rounded-2xl shadow-lg p-3 space-y-2">
+          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Why is this not a concern?</div>
+          <div className="space-y-1">
+            {FEEDBACK_REASONS.map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => setReason(opt.value)}
+                className={`w-full text-xs px-3 py-2 rounded-lg border text-left ${
+                  reason === opt.value
+                    ? "border-amber-400 bg-amber-50 text-amber-800 font-semibold"
+                    : "border-slate-200 text-slate-600 hover:border-slate-300"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <textarea
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            placeholder="Optional notes (e.g. discussed at form time)"
+            rows={2}
+            className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-amber-300/30 resize-none"
+          />
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              onClick={() => setStep("idle")}
+              className="text-xs text-slate-500 px-3 py-1.5 rounded-lg hover:text-slate-700"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => setStep("confirm")}
+              className="text-xs font-semibold text-white bg-amber-500 px-3 py-1.5 rounded-lg hover:bg-amber-600"
+            >
+              Next →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation step */}
+      {step === "confirm" && (
+        <div className="absolute right-0 mt-1 w-80 z-20 bg-white border border-amber-200 rounded-2xl shadow-lg p-4 space-y-3">
+          <div className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">Confirm — scope of this action</div>
+          <p className="text-xs text-slate-700 leading-relaxed">
+            You are marking this alert as not a concern for{" "}
+            <span className="font-bold">{studentId}</span> only.
+          </p>
+          {category && (
+            <p className="text-xs text-slate-700 leading-relaxed">
+              This will reduce the weight of{" "}
+              <span className="font-bold">"{category}"</span> alerts for this student for 7 days.
+            </p>
+          )}
+          <p className="text-xs font-semibold text-slate-600">
+            It will not affect any other student.
+          </p>
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              onClick={() => setStep("form")}
+              className="text-xs text-slate-500 px-3 py-1.5 rounded-lg hover:text-slate-700"
+            >
+              ← Back
+            </button>
+            <button
+              onClick={() => {
+                pendingRef.current = { reason, notes };
+                setSecs(UNDO_SECONDS);
+                setStep("countdown");
+              }}
+              className="text-xs font-semibold text-white bg-amber-500 px-3 py-1.5 rounded-lg hover:bg-amber-600"
+            >
+              Confirm
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TriageCard({
   row,
   pulse,
   brokenSnooze,
+  clusterEntry,
   onReview,
   onSnooze,
+  onNotAConcern,
   onViewProfile,
+  onGroupContext,
   reviewing,
   snoozing,
+  submittingFeedback,
 }: {
-  row:           TriageResultRow;
-  pulse?:        StudentPulseV3;
-  brokenSnooze?: PulseSnooze;
-  onReview:      (studentId: string) => Promise<void>;
-  onSnooze:      (studentId: string, duration: SnoozeDuration, reason: string) => Promise<void>;
-  onViewProfile: (studentId: string) => void;
-  reviewing:     boolean;
-  snoozing:      boolean;
+  row:                 TriageResultRow;
+  pulse?:              StudentPulseV3;
+  brokenSnooze?:       PulseSnooze;
+  clusterEntry?:       ClusterRow;
+  onReview:            (studentId: string) => Promise<void>;
+  onSnooze:            (studentId: string, duration: SnoozeDuration, reason: string) => Promise<void>;
+  onNotAConcern:       (studentId: string, triageId: string, reason: FeedbackReason, notes: string) => Promise<void>;
+  onViewProfile:       (studentId: string) => void;
+  onGroupContext?:     (c: ClusterRow) => void;
+  reviewing:           boolean;
+  snoozing:            boolean;
+  submittingFeedback:  boolean;
 }) {
   const style = TRIAGE_STYLE[row.triage];
   const cats  = pulse?.categories.slice(0, 3) ?? [];
@@ -1101,6 +1335,15 @@ function TriageCard({
               {c.name}
             </span>
           ))}
+          {clusterEntry && (
+            <button
+              onClick={() => onGroupContext?.(clusterEntry)}
+              className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors"
+              title="This individual alert is a separate concern. Group context: this student also appears in a group pattern detected today — the two issues may be related but should be reviewed independently."
+            >
+              + Group context →
+            </button>
+          )}
         </div>
       </div>
 
@@ -1118,7 +1361,6 @@ function TriageCard({
           <span className="font-semibold text-slate-600">Suggested action:</span> {row.suggested_action}
         </p>
       )}
-
       <div className="flex items-center gap-2 flex-wrap">
         <button
           onClick={() => onReview(row.student_id)}
@@ -1130,6 +1372,12 @@ function TriageCard({
         <SnoozeDropdown
           onSnooze={(duration, reason) => onSnooze(row.student_id, duration, reason)}
           pending={snoozing}
+        />
+        <NotAConcernDropdown
+          onSubmit={(reason, notes) => onNotAConcern(row.student_id, row.id, reason, notes)}
+          pending={submittingFeedback}
+          studentId={row.student_id}
+          category={pulse?.categories[0]?.name ?? null}
         />
         <button
           onClick={() => onViewProfile(row.student_id)}
@@ -1345,10 +1593,674 @@ function WeeklySummaryCard({
   );
 }
 
+// ── Cluster UI (Brief 6) ─────────────────────────────────────────────────────
+
+const CLUSTER_TYPE_LABEL: Record<string, string> = {
+  category_spike:        "Category spike",
+  coordinated_jailbreak: "Coordinated jailbreak",
+  "keyword_co-occurrence": "Keyword co-occurrence",
+  sentiment_wave:        "Sentiment wave",
+};
+
+const CLUSTER_SEVERITY_STYLE: Record<string, { chip: string; border: string; icon: string }> = {
+  notable:     { chip: "bg-amber-100 text-amber-700",   border: "border-amber-300",  icon: "⚠" },
+  significant: { chip: "bg-orange-100 text-orange-700", border: "border-orange-400", icon: "⚠" },
+  critical:    { chip: "bg-red-100 text-red-700",       border: "border-red-500",    icon: "🚨" },
+};
+
+function ClusterCard({
+  cluster,
+  onReview,
+  onDismiss,
+  dismissing,
+}: {
+  cluster:   ClusterRow;
+  onReview:  (c: ClusterRow) => void;
+  onDismiss: (id: string) => void;
+  dismissing: boolean;
+}) {
+  const style   = CLUSTER_SEVERITY_STYLE[cluster.severity] ?? CLUSTER_SEVERITY_STYLE.notable;
+  const triage  = cluster.cluster_triage_results?.[0];
+
+  return (
+    <div className={`rounded-2xl border-l-4 ${style.border} bg-white border border-slate-100 p-4`}>
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div className="flex items-center gap-2 flex-wrap min-w-0">
+          <span className={`text-[10px] font-bold tracking-wide px-2 py-0.5 rounded-full ${style.chip}`}>
+            {style.icon} {CLUSTER_TYPE_LABEL[cluster.cluster_type] ?? cluster.cluster_type}
+          </span>
+          <span className="font-semibold text-slate-800 text-sm">{cluster.category}</span>
+          <span className="text-[10px] text-slate-400">
+            {cluster.student_count} students · {Math.round(cluster.time_window_hours)}h window
+            {cluster.group_context ? ` · ${cluster.group_context}` : ""}
+          </span>
+          {triage?.notify_immediately && (
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-600 text-white">
+              📣 Notify immediately
+            </span>
+          )}
+        </div>
+      </div>
+
+      <p className="text-sm text-slate-700 mb-2 leading-snug">
+        {triage?.concern_summary ?? cluster.summary}
+      </p>
+      {triage?.suggested_action && (
+        <p className="text-xs text-slate-500 mb-3 leading-snug">
+          <span className="font-semibold text-slate-600">Suggested action:</span> {triage.suggested_action}
+        </p>
+      )}
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          onClick={() => onReview(cluster)}
+          className="text-xs font-semibold text-white bg-[#06B6D4] px-3 py-1.5 rounded-xl hover:bg-cyan-600 transition-all"
+        >
+          Review group →
+        </button>
+        <button
+          onClick={() => onDismiss(cluster.id)}
+          disabled={dismissing}
+          className="text-xs font-semibold text-slate-500 border border-slate-200 px-3 py-1.5 rounded-xl hover:border-slate-400 disabled:opacity-50 transition-all"
+        >
+          {dismissing ? "Dismissing…" : "Dismiss"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ClusterDetailView({
+  cluster,
+  pulsesById,
+  onClose,
+  onAcknowledge,
+  onDismiss,
+  onViewProfile,
+  acknowledging,
+  dismissing,
+}: {
+  cluster:      ClusterRow;
+  pulsesById:   Map<string, StudentPulseV3>;
+  onClose:      () => void;
+  onAcknowledge:(id: string, note: string) => void;
+  onDismiss:    (id: string) => void;
+  onViewProfile?:(studentId: string) => void;
+  acknowledging: boolean;
+  dismissing:    boolean;
+}) {
+  const [note, setNote] = useState("");
+  const triage   = cluster.cluster_triage_results?.[0];
+  const style    = CLUSTER_SEVERITY_STYLE[cluster.severity] ?? CLUSTER_SEVERITY_STYLE.notable;
+
+  const memberPulses = cluster.student_ids
+    .map(sid => ({ label: sid, pulse: pulsesById.get(sid) }))
+    .filter(m => !!m.pulse);
+
+  const timelineItems = cluster.student_ids.map((sid, i) => ({
+    label: sid,
+    level: cluster.individual_pulses[i] ?? "unknown",
+  }));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-end" onClick={onClose}>
+      <div
+        className="h-full w-full max-w-xl bg-white shadow-2xl overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="sticky top-0 bg-white border-b border-slate-100 px-6 py-4 flex items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 flex-wrap mb-1">
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${style.chip}`}>
+                {style.icon} {CLUSTER_TYPE_LABEL[cluster.cluster_type]}
+              </span>
+              <span className="font-bold text-slate-800">{cluster.category}</span>
+            </div>
+            <p className="text-xs text-slate-400">
+              {cluster.student_count} students · {Math.round(cluster.time_window_hours)}h window
+              {cluster.group_context ? ` · ${cluster.group_context}` : ""}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-xl font-light mt-0.5">×</button>
+        </div>
+
+        <div className="px-6 py-5 space-y-6">
+          {/* LLM assessment */}
+          {triage && (
+            <div>
+              <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Group assessment</h3>
+              <p className="text-sm text-slate-700 leading-snug mb-2">{triage.concern_summary}</p>
+              <p className="text-xs text-slate-500 leading-snug">
+                <span className="font-semibold text-slate-600">Suggested action:</span> {triage.suggested_action}
+              </p>
+              {triage.reasoning && (
+                <details className="mt-2">
+                  <summary className="text-[11px] text-slate-400 cursor-pointer hover:text-slate-600">Show reasoning</summary>
+                  <p className="text-[11px] text-slate-500 mt-1 leading-snug italic">{triage.reasoning}</p>
+                </details>
+              )}
+            </div>
+          )}
+
+          {/* Individual triage levels */}
+          <div>
+            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Students in this cluster</h3>
+            <div className="flex flex-wrap gap-2">
+              {timelineItems.map((item, i) => (
+                <button
+                  key={i}
+                  onClick={() => { onClose(); onViewProfile?.(item.label); }}
+                  className="text-xs text-slate-600 px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-100 flex items-center gap-2 hover:border-[#06B6D4] hover:bg-cyan-50 transition-colors"
+                >
+                  <span className="font-semibold text-slate-700">{item.label}</span>
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                    item.level === "critical" ? "bg-indigo-100 text-indigo-700" :
+                    item.level === "high"     ? "bg-red-100 text-red-700" :
+                    item.level === "medium"   ? "bg-amber-100 text-amber-700" :
+                                               "bg-slate-100 text-slate-500"
+                  }`}>{item.level}</span>
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-2">Click a student to view their full profile.</p>
+          </div>
+
+          {/* Anonymised trend arcs side by side */}
+          {memberPulses.length > 0 && (
+            <div>
+              <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">Sentiment arcs (last 14 days)</h3>
+              <div className="grid grid-cols-2 gap-3">
+                {memberPulses.map(({ label, pulse }) => (
+                  <div key={label} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                    <p className="text-[11px] font-semibold text-slate-600 mb-1">{label}</p>
+                    <div className="h-14">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={pulse!.trend.map((v, i) => ({ i, v }))}>
+                          <Line type="monotone" dataKey="v" stroke="#06B6D4" dot={false} strokeWidth={1.5} />
+                          <YAxis domain={[0, 100]} hide />
+                          <XAxis dataKey="i" hide />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Acknowledge as group */}
+          <div className="border-t border-slate-100 pt-5">
+            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">Acknowledge as group</h3>
+            <p className="text-xs text-slate-400 mb-3 leading-snug">
+              A single acknowledgement will be recorded against this group pattern.
+              Individual student records are not modified.
+            </p>
+            <textarea
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              placeholder="Optional note (e.g. 'Discussed in staff meeting — monitoring year group')"
+              className="w-full text-xs text-slate-700 border border-slate-200 rounded-xl px-3 py-2 resize-none focus:outline-none focus:border-[#06B6D4] mb-3"
+              rows={3}
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={() => onAcknowledge(cluster.id, note)}
+                disabled={acknowledging}
+                className="flex-1 text-xs font-semibold text-white bg-[#06B6D4] px-3 py-2 rounded-xl hover:bg-cyan-600 disabled:opacity-50 transition-all"
+              >
+                {acknowledging ? "Saving…" : "Acknowledge group pattern"}
+              </button>
+              <button
+                onClick={() => onDismiss(cluster.id)}
+                disabled={dismissing}
+                className="text-xs font-semibold text-slate-500 border border-slate-200 px-3 py-2 rounded-xl hover:border-slate-400 disabled:opacity-50 transition-all"
+              >
+                {dismissing ? "…" : "Dismiss"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GroupPatternsPanel({
+  clusters,
+  pulsesById,
+  onReview,
+  onDismiss,
+  dismissingId,
+}: {
+  clusters:    ClusterRow[];
+  pulsesById:  Map<string, StudentPulseV3>;
+  onReview:    (c: ClusterRow) => void;
+  onDismiss:   (id: string) => void;
+  dismissingId: string | null;
+}) {
+  const [otherOpen, setOtherOpen] = useState(true);
+
+  const active  = clusters.filter(c => !c.dismissed_at && !c.acknowledged_at);
+  if (active.length === 0) return null;
+
+  const urgent  = active.filter(c =>  c.cluster_triage_results?.[0]?.notify_immediately);
+  const other   = active.filter(c => !c.cluster_triage_results?.[0]?.notify_immediately);
+
+  return (
+    <div className="space-y-3">
+
+      {/* Urgent group patterns — red box matching individual urgent banner */}
+      {urgent.length > 0 && (
+        <div className="rounded-2xl border-2 border-red-500 bg-red-50/50 p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-red-600 text-white animate-pulse">
+              📣 GROUP ALERT — IMMEDIATE ATTENTION
+            </span>
+            <span className="text-xs text-slate-500">{urgent.length} group pattern{urgent.length === 1 ? "" : "s"}</span>
+          </div>
+          <div className="space-y-3">
+            {urgent.map(c => (
+              <ClusterCard
+                key={c.id}
+                cluster={c}
+                onReview={onReview}
+                onDismiss={onDismiss}
+                dismissing={dismissingId === c.id}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Non-urgent group patterns — collapsible amber section */}
+      {other.length > 0 && (
+        <div className="rounded-2xl border-2 border-amber-200 bg-amber-50/20">
+          <button
+            onClick={() => setOtherOpen(o => !o)}
+            className="w-full px-4 py-3 flex items-center justify-between hover:bg-amber-50/40 transition-colors rounded-t-2xl"
+          >
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-amber-100 text-amber-700">
+                GROUP PATTERNS
+              </span>
+              <span className="text-xs text-slate-600 font-medium">
+                {other.length} group pattern{other.length === 1 ? "" : "s"} detected today
+              </span>
+            </div>
+            <span className="text-slate-400 text-sm">{otherOpen ? "▲" : "▼"}</span>
+          </button>
+
+          {otherOpen && (
+            <div className="px-4 pb-4 space-y-3">
+              {other.map(c => (
+                <ClusterCard
+                  key={c.id}
+                  cluster={c}
+                  onReview={onReview}
+                  onDismiss={onDismiss}
+                  dismissing={dismissingId === c.id}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+// ── Groups tab (Brief 6 dedicated view) ─────────────────────────────────────
+
+function ClusterListItem({
+  cluster,
+  isActive,
+  onClick,
+}: {
+  cluster:  ClusterRow;
+  isActive: boolean;
+  onClick:  () => void;
+}) {
+  const style  = CLUSTER_SEVERITY_STYLE[cluster.severity] ?? CLUSTER_SEVERITY_STYLE.notable;
+  const triage = cluster.cluster_triage_results?.[0];
+  const isDone = !!(cluster.dismissed_at || cluster.acknowledged_at);
+
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full text-left px-4 py-3 border-b border-slate-50 transition-colors flex items-start gap-2 ${
+        isActive ? "bg-cyan-50 border-l-2 border-l-[#06B6D4]" : "hover:bg-slate-50"
+      } ${isDone ? "opacity-50" : ""}`}
+    >
+      <span className={`mt-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${style.chip}`}>
+        {style.icon}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+          <span className="text-sm font-semibold text-slate-700 truncate">{cluster.category}</span>
+          {triage?.notify_immediately && !isDone && (
+            <span className="text-[9px] font-bold text-red-600">📣</span>
+          )}
+          {cluster.acknowledged_at && (
+            <span className="text-[9px] font-semibold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-full">✓ Acked</span>
+          )}
+          {cluster.dismissed_at && !cluster.acknowledged_at && (
+            <span className="text-[9px] text-slate-400">Dismissed</span>
+          )}
+        </div>
+        <div className="text-[10px] text-slate-400 mt-0.5 truncate">
+          {CLUSTER_TYPE_LABEL[cluster.cluster_type]} · {cluster.student_count} students
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function ClusterDetailPanel({
+  cluster,
+  pulsesById,
+  onAcknowledge,
+  onDismiss,
+  onViewProfile,
+  acknowledging,
+  dismissing,
+}: {
+  cluster:       ClusterRow;
+  pulsesById:    Map<string, StudentPulseV3>;
+  onAcknowledge: (id: string, note: string) => void;
+  onDismiss:     (id: string) => void;
+  onViewProfile: (studentId: string) => void;
+  acknowledging: boolean;
+  dismissing:    boolean;
+}) {
+  const [note, setNote] = useState("");
+  const triage  = cluster.cluster_triage_results?.[0];
+  const style   = CLUSTER_SEVERITY_STYLE[cluster.severity] ?? CLUSTER_SEVERITY_STYLE.notable;
+  const isDone  = !!(cluster.dismissed_at || cluster.acknowledged_at);
+
+  const memberPulses = cluster.student_ids
+    .map(sid => ({ label: sid, pulse: pulsesById.get(sid) }))
+    .filter(m => !!m.pulse);
+
+  const timelineItems = cluster.student_ids.map((sid, i) => ({
+    label: sid,
+    level: cluster.individual_pulses[i] ?? "unknown",
+  }));
+
+  return (
+    <div className="h-full overflow-auto">
+      {/* Header */}
+      <div className="sticky top-0 bg-white border-b border-slate-100 px-6 py-4 z-10">
+        <div className="flex items-center gap-2 flex-wrap mb-1">
+          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${style.chip}`}>
+            {style.icon} {CLUSTER_TYPE_LABEL[cluster.cluster_type]}
+          </span>
+          <span className="font-bold text-slate-800">{cluster.category}</span>
+          {triage?.notify_immediately && !isDone && (
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-600 text-white animate-pulse">
+              📣 Notify immediately
+            </span>
+          )}
+          {cluster.acknowledged_at && (
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
+              ✓ Acknowledged
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-slate-400">
+          {cluster.student_count} students · {Math.round(cluster.time_window_hours)}h window
+          {cluster.group_context ? ` · ${cluster.group_context}` : ""}
+          {cluster.acknowledged_at && cluster.acknowledged_by && (
+            <> · Acked by {cluster.acknowledged_by} on {dateShort(cluster.acknowledged_at)}</>
+          )}
+        </p>
+        {cluster.acknowledged_note && (
+          <p className="text-xs text-slate-500 mt-1 italic">"{cluster.acknowledged_note}"</p>
+        )}
+      </div>
+
+      <div className="px-6 py-5 space-y-6">
+
+        {/* What are group patterns — brief explainer */}
+        <div className="rounded-xl bg-slate-50 border border-slate-100 px-4 py-3 text-xs text-slate-500 leading-relaxed">
+          <span className="font-semibold text-slate-600">Group pattern</span> — multiple students showing correlated
+          behaviour in a short time window. This is separate from each student's individual concern. Review both
+          independently; the group context may inform but does not replace individual follow-up.
+        </div>
+
+        {/* LLM assessment */}
+        {triage && (
+          <div>
+            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Group assessment</h3>
+            <p className="text-sm text-slate-700 leading-snug mb-2">{triage.concern_summary}</p>
+            <p className="text-xs text-slate-500 leading-snug">
+              <span className="font-semibold text-slate-600">Suggested action:</span> {triage.suggested_action}
+            </p>
+            {triage.reasoning && (
+              <details className="mt-2">
+                <summary className="text-[11px] text-slate-400 cursor-pointer hover:text-slate-600">Show reasoning</summary>
+                <p className="text-[11px] text-slate-500 mt-1 leading-snug italic">{triage.reasoning}</p>
+              </details>
+            )}
+          </div>
+        )}
+
+        {/* Students in cluster */}
+        <div>
+          <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Students in this cluster</h3>
+          <div className="flex flex-wrap gap-2">
+            {timelineItems.map((item, i) => (
+              <button
+                key={i}
+                onClick={() => onViewProfile(item.label)}
+                className="text-xs text-slate-600 px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-100 flex items-center gap-2 hover:border-[#06B6D4] hover:bg-cyan-50 transition-colors"
+              >
+                <span className="font-semibold text-slate-700">{item.label}</span>
+                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                  item.level === "critical" ? "bg-indigo-100 text-indigo-700" :
+                  item.level === "high"     ? "bg-red-100 text-red-700"       :
+                  item.level === "medium"   ? "bg-amber-100 text-amber-700"   :
+                                             "bg-slate-100 text-slate-500"
+                }`}>{item.level}</span>
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-slate-400 mt-2">Click a student to view their full individual profile.</p>
+        </div>
+
+        {/* Sentiment arcs */}
+        {memberPulses.length > 0 && (
+          <div>
+            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">Sentiment arcs (last 14 days)</h3>
+            <div className="grid grid-cols-2 gap-3">
+              {memberPulses.map(({ label, pulse }) => (
+                <div key={label} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                  <p className="text-[11px] font-semibold text-slate-600 mb-1">{label}</p>
+                  <div className="h-14">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={pulse!.trend.map((v, i) => ({ i, v }))}>
+                        <Line type="monotone" dataKey="v" stroke="#06B6D4" dot={false} strokeWidth={1.5} />
+                        <YAxis domain={[0, 100]} hide />
+                        <XAxis dataKey="i" hide />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Acknowledge / dismiss */}
+        {!isDone && (
+          <div className="border-t border-slate-100 pt-5">
+            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">Acknowledge as group</h3>
+            <p className="text-xs text-slate-400 mb-3 leading-snug">
+              A single acknowledgement records against this group pattern.
+              Individual student records are not affected.
+            </p>
+            <textarea
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              placeholder="Optional note (e.g. 'Discussed in staff meeting — monitoring year group')"
+              className="w-full text-xs text-slate-700 border border-slate-200 rounded-xl px-3 py-2 resize-none focus:outline-none focus:border-[#06B6D4] mb-3"
+              rows={3}
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={() => onAcknowledge(cluster.id, note)}
+                disabled={acknowledging}
+                className="flex-1 text-xs font-semibold text-white bg-[#06B6D4] px-3 py-2 rounded-xl hover:bg-cyan-600 disabled:opacity-50 transition-all"
+              >
+                {acknowledging ? "Saving…" : "Acknowledge group pattern"}
+              </button>
+              <button
+                onClick={() => onDismiss(cluster.id)}
+                disabled={dismissing}
+                className="text-xs font-semibold text-slate-500 border border-slate-200 px-3 py-2 rounded-xl hover:border-slate-400 disabled:opacity-50 transition-all"
+              >
+                {dismissing ? "…" : "Dismiss"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GroupsTab({
+  clusters,
+  pulsesById,
+  selectedCluster,
+  onSelectCluster,
+  onAcknowledge,
+  onDismiss,
+  onViewProfile,
+  dismissingId,
+  acknowledgingId,
+}: {
+  clusters:        ClusterRow[];
+  pulsesById:      Map<string, StudentPulseV3>;
+  selectedCluster: ClusterRow | null;
+  onSelectCluster: (c: ClusterRow | null) => void;
+  onAcknowledge:   (id: string, note: string) => void;
+  onDismiss:       (id: string) => void;
+  onViewProfile:   (studentId: string) => void;
+  dismissingId:    string | null;
+  acknowledgingId: string | null;
+}) {
+  const active   = clusters.filter(c => !c.dismissed_at && !c.acknowledged_at);
+  const reviewed = clusters.filter(c => c.dismissed_at || c.acknowledged_at);
+
+  const urgent = active.filter(c =>  c.cluster_triage_results?.[0]?.notify_immediately);
+  const other  = active.filter(c => !c.cluster_triage_results?.[0]?.notify_immediately);
+
+  // Auto-select first active cluster when none is chosen
+  const displayCluster = selectedCluster ?? active[0] ?? reviewed[0] ?? null;
+
+  if (clusters.length === 0) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center gap-3 text-slate-400">
+        <div className="text-3xl">👥</div>
+        <div className="text-sm font-semibold text-slate-600">No group patterns today</div>
+        <div className="text-xs max-w-xs text-center">
+          Run today's triage to check whether multiple students show correlated patterns.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-1 min-h-0 overflow-hidden">
+      {/* Left: cluster list */}
+      <div className="w-64 shrink-0 bg-white border-r border-slate-200 overflow-auto">
+        <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
+          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+            Group Patterns · {clusters.length}
+          </div>
+        </div>
+
+        {urgent.length > 0 && (
+          <div className="border-b border-red-100">
+            <div className="px-4 py-1.5 bg-red-50/50 flex items-center gap-2">
+              <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-red-600 text-white">URGENT</span>
+              <span className="text-[10px] text-slate-500">{urgent.length}</span>
+            </div>
+            {urgent.map(c => (
+              <ClusterListItem
+                key={c.id}
+                cluster={c}
+                isActive={displayCluster?.id === c.id}
+                onClick={() => onSelectCluster(c)}
+              />
+            ))}
+          </div>
+        )}
+
+        {other.length > 0 && (
+          <div className="border-b border-slate-100">
+            <div className="px-4 py-1.5 bg-amber-50/30 flex items-center gap-2">
+              <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wider">Active</span>
+              <span className="text-[10px] text-slate-400">{other.length}</span>
+            </div>
+            {other.map(c => (
+              <ClusterListItem
+                key={c.id}
+                cluster={c}
+                isActive={displayCluster?.id === c.id}
+                onClick={() => onSelectCluster(c)}
+              />
+            ))}
+          </div>
+        )}
+
+        {reviewed.length > 0 && (
+          <div>
+            <div className="px-4 py-1.5 flex items-center gap-2">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Reviewed</span>
+              <span className="text-[10px] text-slate-400">{reviewed.length}</span>
+            </div>
+            {reviewed.map(c => (
+              <ClusterListItem
+                key={c.id}
+                cluster={c}
+                isActive={displayCluster?.id === c.id}
+                onClick={() => onSelectCluster(c)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Right: detail */}
+      <div className="flex-1 bg-white overflow-auto">
+        {displayCluster ? (
+          <ClusterDetailPanel
+            cluster={displayCluster}
+            pulsesById={pulsesById}
+            onAcknowledge={onAcknowledge}
+            onDismiss={onDismiss}
+            onViewProfile={onViewProfile}
+            acknowledging={acknowledgingId === displayCluster.id}
+            dismissing={dismissingId === displayCluster.id}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-full text-slate-400 text-sm">
+            Select a group pattern from the list
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TriageQueue({
   results,
   pulsesById,
   snoozes,
+  clusterByStudent,
   weeklySummary,
   loading,
   running,
@@ -1356,25 +2268,32 @@ function TriageQueue({
   onRunTriage,
   onReview,
   onSnooze,
+  onNotAConcern,
   onEndSnoozeEarly,
   onViewProfile,
+  onGroupContext,
   reviewingId,
   snoozingId,
+  feedbackSubmittingId,
 }: {
-  results:          TriageResultRow[];
-  pulsesById:       Map<string, StudentPulseV3>;
-  snoozes:          PulseSnooze[];
-  weeklySummary:    WeeklySummary | null;
-  loading:          boolean;
-  running:          boolean;
-  runError:         string | null;
-  onRunTriage:      (force: boolean) => void;
-  onReview:         (studentId: string) => Promise<void>;
-  onSnooze:         (studentId: string, duration: SnoozeDuration, reason: string) => Promise<void>;
-  onEndSnoozeEarly: (snoozeId: string) => Promise<void>;
-  onViewProfile:    (studentId: string) => void;
-  reviewingId:      string | null;
-  snoozingId:       string | null;
+  results:              TriageResultRow[];
+  pulsesById:           Map<string, StudentPulseV3>;
+  snoozes:              PulseSnooze[];
+  clusterByStudent:     Map<string, ClusterRow>;
+  weeklySummary:        WeeklySummary | null;
+  loading:              boolean;
+  running:              boolean;
+  runError:             string | null;
+  onRunTriage:          (force: boolean) => void;
+  onReview:             (studentId: string) => Promise<void>;
+  onSnooze:             (studentId: string, duration: SnoozeDuration, reason: string) => Promise<void>;
+  onNotAConcern:        (studentId: string, triageId: string, reason: FeedbackReason, notes: string) => Promise<void>;
+  onEndSnoozeEarly:     (snoozeId: string) => Promise<void>;
+  onViewProfile:        (studentId: string) => void;
+  onGroupContext:       (c: ClusterRow) => void;
+  reviewingId:          string | null;
+  snoozingId:           string | null;
+  feedbackSubmittingId: string | null;
 }) {
   const now = Date.now();
 
@@ -1464,11 +2383,6 @@ function TriageQueue({
         </div>
       </div>
 
-      {/* Weekly summary */}
-      {weeklySummary && (
-        <WeeklySummaryCard summary={weeklySummary} onViewProfile={onViewProfile} />
-      )}
-
       {/* Urgent banner */}
       {urgent.length > 0 && (
         <div className="rounded-2xl border-2 border-red-500 bg-red-50/50 p-4">
@@ -1485,11 +2399,15 @@ function TriageQueue({
                 row={r}
                 pulse={pulsesById.get(r.student_id)}
                 brokenSnooze={recentlyBrokenByStudent.get(r.student_id)}
+                clusterEntry={clusterByStudent.get(r.student_id)}
                 onReview={onReview}
                 onSnooze={onSnooze}
+                onNotAConcern={onNotAConcern}
                 onViewProfile={onViewProfile}
+                onGroupContext={onGroupContext}
                 reviewing={reviewingId === r.student_id}
                 snoozing={snoozingId === r.student_id}
+                submittingFeedback={feedbackSubmittingId === r.student_id}
               />
             ))}
           </div>
@@ -1505,11 +2423,15 @@ function TriageQueue({
               row={r}
               pulse={pulsesById.get(r.student_id)}
               brokenSnooze={recentlyBrokenByStudent.get(r.student_id)}
+              clusterEntry={clusterByStudent.get(r.student_id)}
               onReview={onReview}
               onSnooze={onSnooze}
+              onNotAConcern={onNotAConcern}
               onViewProfile={onViewProfile}
+              onGroupContext={onGroupContext}
               reviewing={reviewingId === r.student_id}
               snoozing={snoozingId === r.student_id}
+              submittingFeedback={feedbackSubmittingId === r.student_id}
             />
           ))}
         </div>
@@ -1609,6 +2531,192 @@ function TriageQueue({
           )}
         </div>
       )}
+
+      {/* Weekly summary — bottom of queue */}
+      {weeklySummary && (
+        <WeeklySummaryCard summary={weeklySummary} onViewProfile={onViewProfile} />
+      )}
+    </div>
+  );
+}
+
+// ── Calibration view ─────────────────────────────────────────────────────────
+
+function CalibrationView({ feedback }: { feedback: PulseFeedback[] }) {
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+
+  // Aggregate by category — track count, unique staff, and date range.
+  // A suggestion only surfaces after ≥10 submissions of the same type from
+  // different staff members over at least 30 days. This protects the advisory
+  // layer from a handful of accidental clicks skewing calibration.
+  const catStats = useMemo(() => {
+    const m = new Map<string, { count: number; staff: Set<string>; timestamps: number[] }>();
+    feedback.forEach(f => {
+      if (!f.category) return;
+      if (!m.has(f.category)) m.set(f.category, { count: 0, staff: new Set(), timestamps: [] });
+      const entry = m.get(f.category)!;
+      entry.count++;
+      entry.staff.add(f.submitted_by);
+      entry.timestamps.push(new Date(f.submitted_at).getTime());
+    });
+    return m;
+  }, [feedback]);
+
+  // Simple count-by-category for display (includes all submissions)
+  const byCat = useMemo(() => {
+    const m = new Map<string, number>();
+    catStats.forEach((v, k) => m.set(k, v.count));
+    return m;
+  }, [catStats]);
+
+  // Aggregate by reason
+  const byReason = useMemo(() => {
+    const m = new Map<string, number>();
+    feedback.forEach(f => m.set(f.reason, (m.get(f.reason) ?? 0) + 1));
+    return m;
+  }, [feedback]);
+
+  const suggestions = useMemo(() => {
+    const MIN_SUBMISSIONS = 10;
+    const MIN_STAFF       = 2;
+    const MIN_SPAN_DAYS   = 30;
+    return Array.from(catStats.entries())
+      .filter(([cat, s]) => {
+        if (dismissed.has(cat)) return false;
+        if (s.count < MIN_SUBMISSIONS) return false;
+        if (s.staff.size < MIN_STAFF) return false;
+        const sorted = [...s.timestamps].sort((a, b) => a - b);
+        const spanDays = (sorted[sorted.length - 1] - sorted[0]) / 86400000;
+        return spanDays >= MIN_SPAN_DAYS;
+      })
+      .sort((a, b) => b[1].count - a[1].count)
+      .map(([cat, s]) => {
+        const sorted = [...s.timestamps].sort((a, b) => a - b);
+        const spanDays = Math.round((sorted[sorted.length - 1] - sorted[0]) / 86400000);
+        return {
+          cat,
+          count:     s.count,
+          staffCount: s.staff.size,
+          spanDays,
+          message: `${s.count} "not a concern" submissions for "${cat}" from ${s.staff.size} staff members over ${spanDays} days. Consider reviewing keyword sensitivity or policy notes for this category.`,
+        };
+      });
+  }, [catStats, dismissed]);
+
+  const reasonLabel: Record<string, string> = {
+    known_student:     "Known to staff",
+    sentiment_misread: "Sentiment misread",
+    keyword_irrelevant:"Keyword not relevant",
+    other:             "Other",
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto px-6 py-6 space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold text-slate-800">Calibration</h2>
+        <p className="text-sm text-slate-500 mt-1">
+          Each "not a concern" submission suppresses the misfiring signal for 7 days and is logged here to help you spot patterns.
+          Suggested adjustments are advisory — you review and decide.
+        </p>
+      </div>
+
+      {feedback.length === 0 ? (
+        <div className="bg-white rounded-2xl border border-slate-100 p-10 text-center text-slate-400">
+          <div className="text-3xl mb-3">📊</div>
+          <div className="font-semibold text-slate-600">No feedback submitted yet</div>
+          <div className="text-sm mt-1">Use "Not a concern" on queue entries to start building calibration data.</div>
+        </div>
+      ) : (
+        <>
+          {/* Advisory suggestions */}
+          {suggestions.length > 0 && (
+            <div className="space-y-3">
+              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Advisory suggestions</div>
+              {suggestions.map(s => (
+                <div key={s.cat} className="flex items-start gap-4 bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-xs font-bold text-amber-800">{s.cat}</span>
+                      <span className="text-[10px] text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full">
+                        {s.count} submissions · {s.staffCount} staff · {s.spanDays}d span
+                      </span>
+                    </div>
+                    <p className="text-xs text-amber-700">{s.message}</p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 mt-0.5">
+                    <button
+                      onClick={() => setDismissed(d => new Set([...d, s.cat]))}
+                      className="text-[11px] text-slate-500 border border-slate-200 px-2 py-1 rounded-lg hover:text-slate-700 bg-white"
+                    >
+                      Dismiss
+                    </button>
+                    <button
+                      onClick={() => setDismissed(d => new Set([...d, s.cat]))}
+                      className="text-[11px] font-semibold text-amber-700 border border-amber-300 px-2 py-1 rounded-lg hover:bg-amber-100"
+                    >
+                      Noted ✓
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Breakdown tiles */}
+          <div className="grid grid-cols-2 gap-5">
+
+            <div className="bg-white rounded-2xl border border-slate-100 p-4">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-3">By category</div>
+              {byCat.size === 0
+                ? <div className="text-xs text-slate-400">No category data yet</div>
+                : Array.from(byCat.entries()).sort((a, b) => b[1] - a[1]).map(([cat, count]) => (
+                  <div key={cat} className="flex items-center justify-between py-1.5 border-b border-slate-50 last:border-0">
+                    <span className="text-sm text-slate-700">{cat}</span>
+                    <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{count}</span>
+                  </div>
+                ))
+              }
+            </div>
+
+            <div className="bg-white rounded-2xl border border-slate-100 p-4">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-3">By reason</div>
+              {byReason.size === 0
+                ? <div className="text-xs text-slate-400">No reason data yet</div>
+                : Array.from(byReason.entries()).sort((a, b) => b[1] - a[1]).map(([reason, count]) => (
+                  <div key={reason} className="flex items-center justify-between py-1.5 border-b border-slate-50 last:border-0">
+                    <span className="text-sm text-slate-700">{reasonLabel[reason] ?? reason}</span>
+                    <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{count}</span>
+                  </div>
+                ))
+              }
+            </div>
+
+          </div>
+
+          {/* Full log */}
+          <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Submission log</div>
+              <span className="text-xs text-slate-400">{feedback.length} total</span>
+            </div>
+            <div className="divide-y divide-slate-50">
+              {feedback.slice(0, 50).map(f => (
+                <div key={f.id} className="px-4 py-2.5 flex items-center gap-3 text-xs flex-wrap">
+                  <span className="font-semibold text-slate-700 w-28 shrink-0 truncate">{f.student_id}</span>
+                  <span className="text-slate-500">{reasonLabel[f.reason] ?? f.reason}</span>
+                  {f.category && (
+                    <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-semibold">{f.category}</span>
+                  )}
+                  {f.notes && <span className="text-slate-400 italic truncate max-w-xs">"{f.notes}"</span>}
+                  <span className="text-slate-300 ml-auto">
+                    {new Date(f.submitted_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1658,7 +2766,7 @@ function PulseBetaPageContent() {
   const [openTiers, setOpenTiers] = useState<Record<string, boolean>>({ critical: true, high: false, medium: false, low: false });
 
   // Phase 3 triage queue state
-  const [tab, setTab] = useState<"queue" | "all">("queue");
+  const [tab, setTab] = useState<"queue" | "groups" | "all" | "calibration">("queue");
   const [triage, setTriage] = useState<TriageResultRow[]>([]);
   const [triageVersion, setTriageVersion] = useState(0);
   const [triageRunning, setTriageRunning] = useState(false);
@@ -1666,8 +2774,16 @@ function PulseBetaPageContent() {
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [snoozes, setSnoozes] = useState<PulseSnooze[]>([]);
   const [snoozesVersion, setSnoozesVersion] = useState(0);
+  const [feedbackSubmittingId, setFeedbackSubmittingId] = useState<string | null>(null);
+  const [feedbackRows, setFeedbackRows] = useState<PulseFeedback[]>([]);
+  const [feedbackVersion, setFeedbackVersion] = useState(0);
   const [snoozingId, setSnoozingId] = useState<string | null>(null);
   const [weeklyTriage, setWeeklyTriage] = useState<TriageResultRow[]>([]);
+  const [clusters, setClusters] = useState<ClusterRow[]>([]);
+  const [clustersVersion, setClustersVersion] = useState(0);
+  const [selectedCluster, setSelectedCluster] = useState<ClusterRow | null>(null);
+  const [dismissingClusterId, setDismissingClusterId] = useState<string | null>(null);
+  const [acknowledgingClusterId, setAcknowledgingClusterId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAllEvents({ ascending: true })
@@ -1692,6 +2808,37 @@ function PulseBetaPageContent() {
   useEffect(() => {
     fetchSnoozes(SCHOOL_ID).then(setSnoozes);
   }, [snoozesVersion]);
+
+  useEffect(() => {
+    supabase
+      .from("pulse_feedback")
+      .select("id,school_id,student_id,triage_id,submitted_by,submitted_at,reason,notes,signal_context,sentiment_trend,category")
+      .eq("school_id", SCHOOL_ID)
+      .order("submitted_at", { ascending: false })
+      .then(({ data }) => setFeedbackRows((data ?? []) as PulseFeedback[]));
+  }, [feedbackVersion]);
+
+  useEffect(() => {
+    fetchTodayClusters(SCHOOL_ID).then(setClusters);
+  }, [clustersVersion, triageVersion]); // refresh when triage runs (may produce new clusters)
+
+  const feedbackCountByStudent = useMemo(() => {
+    const m = new Map<string, number>();
+    feedbackRows.forEach(f => m.set(f.student_id, (m.get(f.student_id) ?? 0) + 1));
+    return m;
+  }, [feedbackRows]);
+
+  // Map student_id → cluster for active (not dismissed, not acknowledged) clusters.
+  const clusterByStudent = useMemo(() => {
+    const m = new Map<string, ClusterRow>();
+    for (const c of clusters) {
+      if (c.dismissed_at || c.acknowledged_at) continue;
+      for (const sid of c.student_ids) {
+        if (!m.has(sid)) m.set(sid, c);
+      }
+    }
+    return m;
+  }, [clusters]);
 
   // Step 4: when events arrive, kick off LLM analysis for any triggered,
   // settled session that's still unanalysed. Capped per load. Sequential —
@@ -1867,7 +3014,14 @@ function PulseBetaPageContent() {
   const snoozeFromQueue = useCallback(async (studentId: string, duration: SnoozeDuration, reason: string) => {
     setSnoozingId(studentId);
     try {
-      const ok = await insertSnooze({ student_id: studentId, duration, reason });
+      const pulse = pulsesById.get(studentId);
+      const ok = await insertSnooze({
+        student_id:              studentId,
+        duration,
+        reason,
+        snooze_time_score:       pulse?.pulse_score,
+        snooze_time_alert_level: pulse?.alert_level,
+      });
       if (ok) {
         setSnoozesVersion(v => v + 1);
         // Drop today's triage row for this student locally so the queue
@@ -1877,12 +3031,76 @@ function PulseBetaPageContent() {
     } finally {
       setSnoozingId(null);
     }
-  }, []);
+  }, [pulsesById]);
 
   const endSnoozeEarly = useCallback(async (snoozeId: string) => {
     const ok = await breakSnoozeRow(snoozeId, "Ended early by staff");
     if (ok) setSnoozesVersion(v => v + 1);
   }, []);
+
+  const openGroupContext = useCallback((cluster: ClusterRow) => {
+    setSelectedCluster(cluster);
+    setTab("groups");
+  }, []);
+
+  const dismissCluster = useCallback(async (clusterId: string) => {
+    setDismissingClusterId(clusterId);
+    try {
+      await fetch(`/api/clusters/${clusterId}/dismiss`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dismissed_by: "staff" }),
+      });
+      setClustersVersion(v => v + 1);
+      if (selectedCluster?.id === clusterId) setSelectedCluster(null);
+    } finally {
+      setDismissingClusterId(null);
+    }
+  }, [selectedCluster]);
+
+  const acknowledgeCluster = useCallback(async (clusterId: string, note: string) => {
+    setAcknowledgingClusterId(clusterId);
+    try {
+      await fetch(`/api/clusters/${clusterId}/acknowledge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ acknowledged_by: "staff", note }),
+      });
+      setClustersVersion(v => v + 1);
+      if (selectedCluster?.id === clusterId) setSelectedCluster(null);
+    } finally {
+      setAcknowledgingClusterId(null);
+    }
+  }, [selectedCluster]);
+
+  const notAConcernFromQueue = useCallback(async (
+    studentId:  string,
+    triageId:   string,
+    reason:     FeedbackReason,
+    notes:      string,
+  ) => {
+    setFeedbackSubmittingId(studentId);
+    try {
+      const pulse = pulsesById.get(studentId);
+      await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          school_id:      SCHOOL_ID,
+          student_id:     studentId,
+          triage_id:      triageId,
+          submitted_by:   "staff",
+          reason,
+          notes:          notes || null,
+          signal_context: pulse?.signals.map(s => s.id) ?? [],
+          category:       pulse?.categories[0]?.name ?? null,
+        }),
+      });
+      setFeedbackVersion(v => v + 1);
+    } finally {
+      setFeedbackSubmittingId(null);
+    }
+  }, [pulsesById]);
 
   const reviewFromQueue = useCallback(async (studentId: string) => {
     const pulse = pulsesById.get(studentId);
@@ -1965,12 +3183,41 @@ function PulseBetaPageContent() {
                 Today's Queue
               </button>
               <button
+                onClick={() => setTab("groups")}
+                className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-all ${
+                  tab === "groups" ? "bg-white text-[#06B6D4] shadow-sm" : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                Group Patterns
+                {clusters.filter(c => !c.dismissed_at && !c.acknowledged_at).length > 0 && (
+                  <span className={`ml-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                    clusters.some(c => !c.dismissed_at && !c.acknowledged_at && c.cluster_triage_results?.[0]?.notify_immediately)
+                      ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
+                  }`}>
+                    {clusters.filter(c => !c.dismissed_at && !c.acknowledged_at).length}
+                  </span>
+                )}
+              </button>
+              <button
                 onClick={() => setTab("all")}
                 className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-all ${
                   tab === "all" ? "bg-white text-[#06B6D4] shadow-sm" : "text-slate-500 hover:text-slate-700"
                 }`}
               >
                 All students
+              </button>
+              <button
+                onClick={() => setTab("calibration")}
+                className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-all ${
+                  tab === "calibration" ? "bg-white text-amber-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                Calibration
+                {feedbackRows.length > 0 && (
+                  <span className="ml-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                    {feedbackRows.length}
+                  </span>
+                )}
               </button>
             </div>
             <Link href="/pulse"
@@ -1980,12 +3227,17 @@ function PulseBetaPageContent() {
           </div>
         </header>
 
-        {tab === "queue" ? (
+        {tab === "calibration" ? (
+          <div className="flex-1 overflow-auto bg-[#F0F2F8]">
+            <CalibrationView feedback={feedbackRows} />
+          </div>
+        ) : tab === "queue" ? (
           <div className="flex-1 overflow-auto bg-[#F0F2F8]">
             <TriageQueue
               results={triage}
               pulsesById={pulsesById}
               snoozes={snoozes}
+              clusterByStudent={clusterByStudent}
               weeklySummary={weeklySummary}
               loading={loading}
               running={triageRunning}
@@ -1993,10 +3245,27 @@ function PulseBetaPageContent() {
               onRunTriage={runTriage}
               onReview={reviewFromQueue}
               onSnooze={snoozeFromQueue}
+              onNotAConcern={notAConcernFromQueue}
               onEndSnoozeEarly={endSnoozeEarly}
               onViewProfile={viewProfileFromQueue}
+              onGroupContext={openGroupContext}
               reviewingId={reviewingId}
               snoozingId={snoozingId}
+              feedbackSubmittingId={feedbackSubmittingId}
+            />
+          </div>
+        ) : tab === "groups" ? (
+          <div className="flex flex-1 min-h-0 overflow-hidden">
+            <GroupsTab
+              clusters={clusters}
+              pulsesById={pulsesById}
+              selectedCluster={selectedCluster}
+              onSelectCluster={setSelectedCluster}
+              onAcknowledge={acknowledgeCluster}
+              onDismiss={dismissCluster}
+              onViewProfile={viewProfileFromQueue}
+              dismissingId={dismissingClusterId}
+              acknowledgingId={acknowledgingClusterId}
             />
           </div>
         ) : (
@@ -2048,7 +3317,7 @@ function PulseBetaPageContent() {
           {/* Right detail */}
           <div className="flex-1 bg-white overflow-auto">
             {selected
-              ? <StudentDetail pulse={selected} events={events} analyses={analyses} onAcknowledge={acknowledgeSelected} onRequestLLM={requestLLMForSession} />
+              ? <StudentDetail pulse={selected} events={events} analyses={analyses} onAcknowledge={acknowledgeSelected} onRequestLLM={requestLLMForSession} feedbackCount={feedbackCountByStudent.get(selected.student_id) ?? 0} />
               : <div className="flex items-center justify-center h-full text-slate-400 text-sm">Select a student</div>
             }
           </div>
@@ -2057,6 +3326,20 @@ function PulseBetaPageContent() {
         </>
         )}
       </div>
+
+      {/* Cluster detail overlay — only outside the groups tab (groups tab renders inline) */}
+      {selectedCluster && tab !== "groups" && (
+        <ClusterDetailView
+          cluster={selectedCluster}
+          pulsesById={pulsesById}
+          onClose={() => setSelectedCluster(null)}
+          onAcknowledge={acknowledgeCluster}
+          onDismiss={dismissCluster}
+          onViewProfile={viewProfileFromQueue}
+          acknowledging={acknowledgingClusterId === selectedCluster.id}
+          dismissing={dismissingClusterId === selectedCluster.id}
+        />
+      )}
     </div>
   );
 }

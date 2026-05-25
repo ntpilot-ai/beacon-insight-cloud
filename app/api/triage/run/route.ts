@@ -4,6 +4,8 @@ import { calculateAllPulsesV3, type BeaconEvent, type PulseAcknowledgement, type
 import { groupSessions, mergeAnalyses, type SessionAnalysis } from "@/lib/sessions";
 import { buildTriagePrompt, parseTriageVerdict, isActiveStudent, TRIAGE_SYSTEM_PROMPT, type TriageResult } from "@/lib/triage";
 import { activeSnoozeFor, shouldBreakSnooze, type PulseSnooze } from "@/lib/snooze";
+import { type StudentSignalSuppression } from "@/lib/feedback";
+import { detectClusters, type StudentCluster } from "@/lib/cluster_engine";
 
 /**
  * POST /api/triage/run
@@ -55,15 +57,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: "no_events", processed: 0, triaged: [] });
   }
 
-  const [acks, analyses, existingToday, snoozes] = await Promise.all([
+  const [acks, analyses, existingToday, snoozes, suppressions] = await Promise.all([
     fetchAcks(supabase, school_id),
     fetchAnalyses(supabase, school_id, cutoff),
     fetchTodaysTriage(supabase, school_id, todayUtc),
     fetchSnoozes(supabase, school_id),
+    fetchSuppressions(supabase, school_id, now),
   ]);
 
   // ── Score everyone with the v3 engine, then filter ──
-  const pulses   = calculateAllPulsesV3(events, acks, analyses);
+  const rawPulses = calculateAllPulsesV3(events, acks, analyses);
+  // Apply active signal suppressions (triage-only: suppressions affect the
+  // prompt and threshold decisions but never write back to the live Pulse page).
+  const pulses = rawPulses.map(p => applySuppressions(p, suppressions, now));
   const sessions = mergeAnalyses(groupSessions(events), analyses);
 
   const eventsByStudent = bucket(events, e => e.student_id);
@@ -193,19 +199,64 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // ── Cluster detection (runs across all active pulses, not just today's candidates) ──
+  const allClusters    = detectClusters(events, pulses, now);
+  const todayClusters  = await fetchTodayClusters(supabase, school_id, todayUtc);
+  const existingKeys   = new Set(todayClusters.map((c: { cluster_key: string }) => c.cluster_key));
+  const newClusters    = force ? allClusters : allClusters.filter(c => !existingKeys.has(c.cluster_key));
+
+  const clusterResults: { cluster_key: string; triage: string; notify_immediately: boolean }[] = [];
+  const clusterFailures: { cluster_key: string; error: string }[] = [];
+
+  for (let i = 0; i < newClusters.length; i += CONCURRENCY) {
+    const batch = newClusters.slice(i, i + CONCURRENCY);
+    await Promise.allSettled(batch.map(async c => {
+      try {
+        const clusterId = await upsertCluster(supabase, school_id, c, todayUtc);
+        if (!clusterId) return;
+
+        const verdict = await triageCluster(c, apiKey!, now);
+        await supabase.from("cluster_triage_results").insert({
+          school_id,
+          cluster_id:        clusterId,
+          triaged_at:        new Date(now).toISOString(),
+          triage:            verdict.triage,
+          concern_summary:   verdict.concern_summary,
+          suggested_action:  verdict.suggested_action,
+          notify_immediately: verdict.notify_immediately,
+          reasoning:         verdict.reasoning ?? null,
+          model_version:     "claude-haiku-4-5",
+          requested_by,
+        });
+
+        clusterResults.push({
+          cluster_key:       c.cluster_key,
+          triage:            verdict.triage,
+          notify_immediately: verdict.notify_immediately,
+        });
+      } catch (err: any) {
+        clusterFailures.push({ cluster_key: c.cluster_key, error: String(err).slice(0, 300) });
+      }
+    }));
+  }
+
   return NextResponse.json({
     status:    "ok",
     processed: candidates.length,
     succeeded: upsertedCount,
     failed:    failures.length,
-    snoozed_skipped: skippedSnoozed.length,
-    snoozes_broken:  brokenSnoozes.length,
+    snoozed_skipped:   skippedSnoozed.length,
+    snoozes_broken:    brokenSnoozes.length,
+    clusters_detected: allClusters.length,
+    clusters_triaged:  clusterResults.length,
     triaged:   results.map(r => ({
       student_id:         r.student_id,
       triage:             r.triage,
       notify_immediately: r.notify_immediately,
     })),
+    clusters: clusterResults,
     failures,
+    cluster_failures: clusterFailures,
   });
 }
 
@@ -312,13 +363,56 @@ async function fetchSnoozes(supabase: any, schoolId: string): Promise<PulseSnooz
   // recent per student client-side.
   const { data, error } = await supabase
     .from("pulse_snooze")
-    .select("id,school_id,student_id,snoozed_by,snoozed_at,expires_at,duration_label,reason,broken_early,broken_at,broken_reason")
+    .select("id,school_id,student_id,snoozed_by,snoozed_at,expires_at,duration_label,reason,broken_early,broken_at,broken_reason,snooze_time_score,snooze_time_alert_level")
     .eq("school_id", schoolId)
     .eq("broken_early", false)
     .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
     .order("snoozed_at", { ascending: false });
   if (error || !data) return [];
   return data as PulseSnooze[];
+}
+
+async function fetchSuppressions(supabase: any, schoolId: string, now: number): Promise<StudentSignalSuppression[]> {
+  const { data, error } = await supabase
+    .from("student_signal_suppression")
+    .select("id,school_id,student_id,signal_id,category,factor,expires_at,reason,feedback_id")
+    .eq("school_id", schoolId)
+    .gt("expires_at", new Date(now).toISOString());
+  if (error || !data) return [];
+  return data as StudentSignalSuppression[];
+}
+
+function applySuppressions(
+  pulse:        StudentPulseV3,
+  suppressions: StudentSignalSuppression[],
+  now:          number,
+): StudentPulseV3 {
+  const active = suppressions.filter(
+    s => s.student_id === pulse.student_id && new Date(s.expires_at).getTime() > now,
+  );
+  if (!active.length) return pulse;
+
+  const dominantCat = pulse.categories[0]?.name ?? null;
+  const signals = pulse.signals.map(sig => {
+    const sup = active.find(s =>
+      (!s.signal_id || s.signal_id === sig.id) &&
+      (!s.category    || s.category === dominantCat),
+    );
+    if (!sup) return sig;
+    return { ...sig, score: Math.round(sig.score * sup.factor) };
+  });
+
+  const totalWeight = signals.reduce((s, sig) => s + sig.weight, 0);
+  const newScore    = totalWeight > 0
+    ? Math.round(signals.reduce((s, sig) => s + sig.score * sig.weight, 0) / totalWeight)
+    : 0;
+  const newLevel: StudentPulseV3["alert_level"] =
+    newScore >= 70 ? "critical" : newScore >= 50 ? "high" : newScore >= 25 ? "medium" : "low";
+  const newDominant = [...signals].sort(
+    (a, b) => b.score * b.weight - a.score * a.weight,
+  )[0] ?? pulse.dominant_signal;
+
+  return { ...pulse, signals, pulse_score: newScore, alert_level: newLevel, dominant_signal: newDominant };
 }
 
 async function fetchTodaysTriage(supabase: any, schoolId: string, todayUtc: string): Promise<{ student_id: string }[]> {
@@ -340,4 +434,147 @@ function bucket<T, K>(items: T[], keyFn: (item: T) => K): Map<K, T[]> {
     if (arr) arr.push(item); else map.set(k, [item]);
   }
   return map;
+}
+
+async function fetchTodayClusters(
+  supabase:  any,
+  schoolId:  string,
+  todayUtc:  string,
+): Promise<{ cluster_key: string }[]> {
+  const { data, error } = await supabase
+    .from("student_clusters")
+    .select("cluster_key")
+    .eq("school_id", schoolId)
+    .gte("detected_at", `${todayUtc}T00:00:00Z`)
+    .lte("detected_at", `${todayUtc}T23:59:59.999Z`);
+  if (error || !data) return [];
+  return data;
+}
+
+async function upsertCluster(
+  supabase:  any,
+  schoolId:  string,
+  cluster:   StudentCluster,
+  todayUtc:  string,
+): Promise<string | null> {
+  const row = {
+    school_id:         schoolId,
+    cluster_key:       cluster.cluster_key,
+    detected_at:       cluster.detected_at,
+    detected_date:     todayUtc,
+    cluster_type:      cluster.cluster_type,
+    student_ids:       cluster.student_ids,
+    student_count:     cluster.student_count,
+    category:          cluster.category,
+    time_window_hours: cluster.time_window_hours,
+    group_context:     cluster.group_context ?? null,
+    severity:          cluster.severity,
+    summary:           cluster.summary,
+    individual_pulses: cluster.individual_pulses,
+    requires_review:   cluster.requires_review,
+  };
+
+  const dayStart = `${todayUtc}T00:00:00Z`;
+  const dayEnd   = `${todayUtc}T23:59:59.999Z`;
+
+  // Update-first pattern (same as individual triage) because the unique index
+  // is on an expression and ON CONFLICT can't target it.
+  const upd = await supabase
+    .from("student_clusters")
+    .update(row)
+    .eq("school_id",   schoolId)
+    .eq("cluster_key", cluster.cluster_key)
+    .gte("detected_at", dayStart)
+    .lte("detected_at", dayEnd)
+    .select("id");
+
+  if (upd.data && upd.data.length > 0) return upd.data[0].id as string;
+
+  const ins = await supabase
+    .from("student_clusters")
+    .insert(row)
+    .select("id");
+
+  if (ins.error || !ins.data?.length) return null;
+  return ins.data[0].id as string;
+}
+
+const CLUSTER_SYSTEM_PROMPT = `You are a school safeguarding analyst assessing a group-level behavioural pattern detected across multiple students.
+You must not identify, name, or reference individual students.
+Assess whether this pattern represents a collective concern that requires staff attention beyond what individual student reviews would surface.
+Consider: coordinated behaviour, shared stressors, group dynamics, and safeguarding implications.
+
+Respond with valid JSON only — no prose, no markdown fences.
+Schema:
+{
+  "triage": "notable" | "significant" | "critical",
+  "concern_summary": "...",
+  "suggested_action": "...",
+  "notify_immediately": boolean,
+  "reasoning": "..."
+}
+
+triage levels:
+  notable      — worth awareness but no urgent action needed
+  significant  — staff should review together before individual sessions
+  critical     — immediate collective response required
+
+notify_immediately true only for: coordinated jailbreak patterns OR critical severity sentiment waves.`;
+
+async function triageCluster(
+  cluster: StudentCluster,
+  apiKey:  string,
+  now:     number,
+): Promise<{ triage: string; concern_summary: string; suggested_action: string; notify_immediately: boolean; reasoning?: string }> {
+  const prompt = `Group pattern detected:
+Type: ${cluster.cluster_type.replace(/-/g, " ")}
+Category: ${cluster.category}
+Students affected: ${cluster.student_count} (anonymised)
+Time window: ${cluster.time_window_hours} hours
+Group context: ${cluster.group_context ?? "mixed platforms"}
+Engine severity: ${cluster.severity}
+Individual alert levels: ${cluster.individual_pulses.join(", ")}
+Summary: ${cluster.summary}
+
+Assess whether this constitutes a safeguarding concern at the group level. Consider whether the collective pattern is more significant than the sum of individual alerts.`;
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type":      "application/json",
+      "x-api-key":         apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model:      "claude-haiku-4-5-20251001",
+      max_tokens: 500,
+      system:     CLUSTER_SYSTEM_PROMPT,
+      messages:   [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!response.ok) throw new Error(`Haiku cluster triage failed (${response.status})`);
+
+  const data   = await response.json();
+  const text   = (data.content?.map((c: any) => c.text ?? "").join("") ?? "").trim();
+  const clean  = text.replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
+
+  try {
+    const parsed = JSON.parse(clean);
+    return {
+      triage:            ["notable","significant","critical"].includes(parsed.triage) ? parsed.triage : cluster.severity,
+      concern_summary:   String(parsed.concern_summary || "").slice(0, 500),
+      suggested_action:  String(parsed.suggested_action || "").slice(0, 500),
+      notify_immediately: !!parsed.notify_immediately,
+      reasoning:         String(parsed.reasoning || "").slice(0, 500),
+    };
+  } catch {
+    // Fallback: use engine-computed values if LLM output is unparseable
+    return {
+      triage:            cluster.severity,
+      concern_summary:   cluster.summary,
+      suggested_action:  cluster.requires_review ? "Review group pattern with pastoral lead." : "Monitor individually.",
+      notify_immediately: cluster.cluster_type === "coordinated_jailbreak" || cluster.severity === "critical",
+    };
+  }
 }

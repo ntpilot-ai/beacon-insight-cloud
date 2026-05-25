@@ -11,17 +11,19 @@ import type { StudentPulseV3 } from "./pulse_engine_v3";
 export type SnoozeDuration = "24h" | "48h" | "7d" | "14d" | "until-change";
 
 export interface PulseSnooze {
-  id:              string;
-  school_id:       string;
-  student_id:      string;
-  snoozed_by:      string;
-  snoozed_at:      string;
-  expires_at:      string | null;
-  duration_label:  SnoozeDuration | string;
-  reason:          string | null;
-  broken_early:    boolean;
-  broken_at:       string | null;
-  broken_reason:   string | null;
+  id:                      string;
+  school_id:               string;
+  student_id:              string;
+  snoozed_by:              string;
+  snoozed_at:              string;
+  expires_at:              string | null;
+  duration_label:          SnoozeDuration | string;
+  reason:                  string | null;
+  broken_early:            boolean;
+  broken_at:               string | null;
+  broken_reason:           string | null;
+  snooze_time_score:       number | null;
+  snooze_time_alert_level: string | null;
 }
 
 export interface SnoozeDurationOption {
@@ -67,6 +69,8 @@ export function activeSnoozeFor(
 // The fifth override — "triage would be urgent" — can only be known after
 // running the LLM, which is what we're trying to skip; the critical-alert
 // proxy approximates it conservatively.
+const ALERT_ORDER: Record<string, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+
 export function shouldBreakSnooze(pulse: StudentPulseV3, snooze: PulseSnooze): string | null {
   if (pulse.re_emergence) {
     return "Previously acknowledged pattern re-emerged";
@@ -74,8 +78,30 @@ export function shouldBreakSnooze(pulse: StudentPulseV3, snooze: PulseSnooze): s
   if (pulse.rapid_escalation) {
     return "Rapid escalation in last 3 days";
   }
+  // Only break for "critical" if the alert level has genuinely risen since
+  // the snooze was created. Without this check, a student who was already at
+  // critical when snoozed would have their snooze broken on every triage run.
+  // Legacy rows with no baseline (snooze_time_alert_level = null) fall back to
+  // the old behaviour and break — conservative until they get a new snooze.
   if (pulse.alert_level === "critical") {
-    return `Alert level rose to critical (score ${pulse.pulse_score})`;
+    const baseline = snooze.snooze_time_alert_level;
+    if (baseline !== null) {
+      // We have a reference level — break only if it genuinely rose to critical.
+      const baselineOrder = ALERT_ORDER[baseline] ?? 0;
+      if (baselineOrder < ALERT_ORDER["critical"]) {
+        return `Alert level rose to critical (score ${pulse.pulse_score})`;
+      }
+    }
+    // Whether or not we have a level baseline, break for a meaningful score
+    // spike (>10 points). If both baseline fields are null (snooze created
+    // before migration 0008), this is the only check that fires — prevents
+    // legacy snoozes from being broken on every run with no recourse.
+    if (
+      snooze.snooze_time_score !== null &&
+      pulse.pulse_score > snooze.snooze_time_score + 10
+    ) {
+      return `Score escalated further since snooze (now ${pulse.pulse_score}, was ${snooze.snooze_time_score})`;
+    }
   }
   // context_boost is clamped to >=0 specifically when the real-time layer
   // (layer 3) fires, so a non-negative boost on an otherwise-ack'd student

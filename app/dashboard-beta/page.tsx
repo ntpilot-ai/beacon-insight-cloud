@@ -11,6 +11,18 @@ import BeaconIntelligence from "@/components/AISummary";
 import Link from "next/link";
 import TrendLine from "@/components/TrendLine";
 
+interface DashboardAck {
+  student_id:     string;
+  acknowledged_at: string;
+  action_taken:   string;
+}
+
+interface DashboardSnooze {
+  student_id: string;
+  expires_at: string | null;
+  broken_early: boolean;
+}
+
 interface BeaconEvent {
   id:         number;
   created_at: string;
@@ -60,7 +72,6 @@ function categoryFromMatched(matched: string[]): string {
   return "General";
 }
 
-// ── KPI Card ──────────────────────────────────────────────────────────────────
 function KPICard({ label, value, sub, color, large }: {
   label: string; value: string | number; sub?: string; color: string; large?: boolean;
 }) {
@@ -75,8 +86,24 @@ function KPICard({ label, value, sub, color, large }: {
   );
 }
 
-// ── Today's flagged students ───────────────────────────────────────────────────
-function TodayPanel({ events, pulses }: { events: BeaconEvent[]; pulses: any[] }) {
+const ACK_ACTION_BADGE: Record<string, { label: string; cls: string }> = {
+  monitored: { label: "Monitored",  cls: "bg-slate-100 text-slate-600"   },
+  referred:  { label: "Referred",   cls: "bg-amber-100 text-amber-700"   },
+  escalated: { label: "Escalated",  cls: "bg-red-100 text-red-700"       },
+  no_action: { label: "Reviewed",   cls: "bg-slate-100 text-slate-600"   },
+};
+
+function TodayPanel({
+  events,
+  pulses,
+  acks,
+  snoozes,
+}: {
+  events:  BeaconEvent[];
+  pulses:  any[];
+  acks:    DashboardAck[];
+  snoozes: DashboardSnooze[];
+}) {
   const now       = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
@@ -85,7 +112,6 @@ function TodayPanel({ events, pulses }: { events: BeaconEvent[]; pulses: any[] }
     (e.risk === "high" || e.risk === "critical" || e.risk === "medium" || e.blocked)
   );
 
-  // Group by student, keep highest risk
   const byStudent: Record<string, { events: BeaconEvent[]; topRisk: string; lastSeen: string }> = {};
   todayEvents.forEach(e => {
     if (!byStudent[e.student_id]) {
@@ -126,9 +152,17 @@ function TodayPanel({ events, pulses }: { events: BeaconEvent[]; pulses: any[] }
           <h2 className="font-bold text-slate-800">Students Needing Attention Today</h2>
           <p className="text-xs text-slate-400 mt-0.5">Medium and high risk activity in the last 24 hours</p>
         </div>
-        <span className="text-xs font-bold px-3 py-1 rounded-full bg-red-100 text-red-700">
-          {students.length} student{students.length !== 1 ? "s" : ""}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-bold px-3 py-1 rounded-full bg-red-100 text-red-700">
+            {students.length} student{students.length !== 1 ? "s" : ""}
+          </span>
+          <Link
+            href="/pulse-beta"
+            className="text-xs font-semibold text-[#06B6D4] border border-[#06B6D4] px-3 py-1 rounded-full hover:bg-cyan-50 transition-colors"
+          >
+            View Pulse Queue →
+          </Link>
+        </div>
       </div>
 
       <div className="divide-y divide-slate-100">
@@ -137,12 +171,15 @@ function TodayPanel({ events, pulses }: { events: BeaconEvent[]; pulses: any[] }
           const pulse    = pulses.find(p => p.student_id === studentId);
           const blocked  = data.events.filter(e => e.blocked).length;
 
-          // Most concerning prompt: highest risk first, then most recent.
-          const headline = [...data.events].sort((a, b) => {
-            const diff = (riskOrder[b.risk] || 0) - (riskOrder[a.risk] || 0);
-            if (diff !== 0) return diff;
-            return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-          })[0];
+          const now = Date.now();
+          const activeSnooze = snoozes.find(s =>
+            s.student_id === studentId &&
+            !s.broken_early &&
+            (!s.expires_at || new Date(s.expires_at).getTime() > now),
+          );
+          const recentAck = acks
+            .filter(a => a.student_id === studentId)
+            .sort((a, b) => new Date(b.acknowledged_at).getTime() - new Date(a.acknowledged_at).getTime())[0];
 
           const latestTime = new Date(data.lastSeen).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
           const trendArrow = pulse?.trend_direction === "rising"  ? "↑"
@@ -150,55 +187,42 @@ function TodayPanel({ events, pulses }: { events: BeaconEvent[]; pulses: any[] }
                            : "→";
 
           return (
-            <div key={studentId} className="px-6 py-4 hover:bg-slate-50/60 transition-colors border-l-4"
-              style={{ borderLeftColor: rs.dot }}>
+            <div key={studentId} className={`px-6 py-4 hover:bg-slate-50/60 transition-colors border-l-4 ${activeSnooze || recentAck ? "opacity-70" : ""}`}
+              style={{ borderLeftColor: activeSnooze ? "#06B6D4" : recentAck ? "#10B981" : rs.dot }}>
 
-              {/* Row 1 — identity, risk, inline meta on the left; combined pulse/open pill on the right */}
-              <div className="flex items-start justify-between gap-4 mb-2.5">
-                <div className="flex items-center gap-x-3 gap-y-1 min-w-0 flex-wrap">
-                  <span className="font-bold text-slate-800 break-all">{studentId}</span>
-                  <span className={`text-[11px] font-bold tracking-wide ${rs.text}`}>
-                    {data.topRisk.toUpperCase()}
+              <div className="flex items-center gap-x-3 gap-y-1 min-w-0 flex-wrap">
+                <span className="font-bold text-slate-800 break-all">{studentId}</span>
+                <span className={`text-[11px] font-bold tracking-wide ${rs.text}`}>
+                  {data.topRisk.toUpperCase()}
+                </span>
+                {pulse && (
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full border border-slate-200 bg-white" style={{ color: rs.dot }}>
+                    Pulse {pulse.pulse_score} {trendArrow}
                   </span>
-                  <span className="text-xs text-slate-400 flex items-center gap-2">
-                    <span><span className="font-semibold text-slate-600">{data.events.length}</span> incident{data.events.length !== 1 ? "s" : ""}</span>
-                    {blocked > 0 && (
-                      <>
-                        <span className="text-slate-300">·</span>
-                        <span><span className="font-semibold text-red-600">{blocked}</span> blocked</span>
-                      </>
-                    )}
-                    <span className="text-slate-300">·</span>
-                    <span>latest {latestTime}</span>
+                )}
+                {activeSnooze && (
+                  <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-cyan-100 text-cyan-700">
+                    💤 Snoozed in Pulse
                   </span>
-                </div>
-
-                <Link
-                  href={`/pulse?student=${encodeURIComponent(studentId)}`}
-                  title={`Open ${studentId} in Pulse`}
-                  className="shrink-0 inline-flex items-center gap-2 text-xs font-semibold border border-slate-200 bg-white px-3 py-1.5 rounded-full hover:border-[#06B6D4] hover:bg-cyan-50 transition-colors"
-                >
-                  {pulse && (
+                )}
+                {!activeSnooze && recentAck && (
+                  <span className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full ${ACK_ACTION_BADGE[recentAck.action_taken]?.cls ?? "bg-emerald-100 text-emerald-700"}`}>
+                    ✓ {ACK_ACTION_BADGE[recentAck.action_taken]?.label ?? "Reviewed"}
+                  </span>
+                )}
+                <span className="text-xs text-slate-400 flex items-center gap-2">
+                  <span><span className="font-semibold text-slate-600">{data.events.length}</span> incident{data.events.length !== 1 ? "s" : ""}</span>
+                  {blocked > 0 && (
                     <>
-                      <span className="text-slate-500">Pulse</span>
-                      <span className="font-bold" style={{ color: rs.dot }}>{pulse.pulse_score}</span>
-                      <span style={{ color: rs.dot }}>{trendArrow}</span>
-                      <span className="text-slate-300">|</span>
+                      <span className="text-slate-300">·</span>
+                      <span><span className="font-semibold text-red-600">{blocked}</span> blocked</span>
                     </>
                   )}
-                  <span className="text-[#06B6D4]">Open →</span>
-                </Link>
-              </div>
-
-              {/* Row 2 — headline prompt with source AI engine tag */}
-              <div className="flex items-start gap-3 pl-3 border-l-2 border-slate-200">
-                <blockquote className="text-sm text-slate-700 leading-snug line-clamp-2 flex-1 min-w-0">
-                  {headline.prompt}
-                </blockquote>
-                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full mt-0.5">
-                  {headline.platform}
+                  <span className="text-slate-300">·</span>
+                  <span>latest {latestTime}</span>
                 </span>
               </div>
+
             </div>
           );
         })}
@@ -207,14 +231,11 @@ function TodayPanel({ events, pulses }: { events: BeaconEvent[]; pulses: any[] }
   );
 }
 
-// ── Collapsible overview ──────────────────────────────────────────────────────
 function OverviewSection({ events, term, setTerm }: {
   events: BeaconEvent[]; term: string; setTerm: (t: string) => void;
 }) {
   const [open, setOpen] = useState(false);
 
-  // Anchor the trend chart to the end of the selected term (clamped to today),
-  // so "last 7 days" reflects the visible term, not wall-clock today.
   const trendAnchor = useMemo(() => {
     const t = TERMS.find(t => t.label === term) ?? TERMS[0];
     const termEnd = new Date(t.end);
@@ -256,7 +277,6 @@ function OverviewSection({ events, term, setTerm }: {
       {open && (
         <div className="px-6 pb-6 border-t border-slate-100">
 
-          {/* Mini KPIs */}
           <div className="grid grid-cols-4 gap-4 mt-4 mb-6">
             {[
               { label: "Total Prompts",  value: total,   color: "#06B6D4" },
@@ -271,16 +291,13 @@ function OverviewSection({ events, term, setTerm }: {
             ))}
           </div>
 
-          {/* Activity trend chart */}
           <div className="mb-6">
             <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Activity Trend</div>
             <TrendLine events={events} anchor={trendAnchor} />
           </div>
 
-          {/* Risk breakdown + Platform side by side */}
           <div className="grid grid-cols-2 gap-6">
 
-            {/* Risk breakdown first */}
             <div>
               <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Risk Breakdown</div>
               <div className="space-y-2">
@@ -303,7 +320,6 @@ function OverviewSection({ events, term, setTerm }: {
               </div>
             </div>
 
-            {/* Platform usage second */}
             <div>
               <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Platform Usage</div>
               <div className="space-y-2">
@@ -327,22 +343,45 @@ function OverviewSection({ events, term, setTerm }: {
   );
 }
 
-// ── Main page ─────────────────────────────────────────────────────────────────
-export default function DashboardV2() {
+export default function DashboardBeta() {
   const { loading: authLoading, authenticated } = useAuth();
-  const [events, setEvents] = useState<BeaconEvent[]>([]);
-  const [term, setTerm]     = useState(getCurrentTerm);
-  const [live, setLive]     = useState(true);
+  const [events, setEvents]   = useState<BeaconEvent[]>([]);
+  const [acks, setAcks]       = useState<DashboardAck[]>([]);
+  const [snoozes, setSnoozes] = useState<DashboardSnooze[]>([]);
+  const [term, setTerm]       = useState(getCurrentTerm);
+  const [live, setLive]       = useState(true);
 
   async function loadEvents() {
     const data = await fetchAllEvents<BeaconEvent>({ schoolId: SCHOOL_ID, ascending: false });
     setEvents(data);
   }
 
+  async function loadPulseStatus() {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const [acksRes, snoozesRes] = await Promise.all([
+      supabase
+        .from("pulse_acknowledgements")
+        .select("student_id,acknowledged_at,action_taken")
+        .eq("school_id", SCHOOL_ID)
+        .gte("acknowledged_at", sevenDaysAgo)
+        .order("acknowledged_at", { ascending: false }),
+      supabase
+        .from("pulse_snooze")
+        .select("student_id,expires_at,broken_early")
+        .eq("school_id", SCHOOL_ID)
+        .eq("broken_early", false),
+    ]);
+    if (acksRes.data)    setAcks(acksRes.data as DashboardAck[]);
+    if (snoozesRes.data) setSnoozes(snoozesRes.data as DashboardSnooze[]);
+  }
+
   useEffect(() => {
     loadEvents();
-    const channel = supabase.channel("beacon-live-v2")
+    loadPulseStatus();
+    const channel = supabase.channel("beacon-live-beta")
       .on("postgres_changes", { event: "*", schema: "public", table: "beacon_events" }, loadEvents)
+      .on("postgres_changes", { event: "*", schema: "public", table: "pulse_acknowledgements" }, loadPulseStatus)
+      .on("postgres_changes", { event: "*", schema: "public", table: "pulse_snooze" }, loadPulseStatus)
       .subscribe(s => setLive(s === "SUBSCRIBED"));
     return () => { supabase.removeChannel(channel); };
   }, []);
@@ -356,7 +395,6 @@ export default function DashboardV2() {
 
   const pulses = useMemo(() => calculateAllPulses(events), [events]);
 
-  // KPI calculations
   const totalPrompts = filteredEvents.length;
   const blockedToday = useMemo(() => {
     const today = new Date();
@@ -376,7 +414,6 @@ export default function DashboardV2() {
 
       <div className="flex-1 flex flex-col min-w-0">
 
-        {/* Header */}
         <header className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between shrink-0">
           <div>
             <div className="flex items-center gap-3">
@@ -392,7 +429,7 @@ export default function DashboardV2() {
               href="/"
               className="text-xs font-semibold text-slate-500 border border-slate-200 px-4 py-2 rounded-xl hover:border-[#06B6D4] hover:text-[#06B6D4] transition-all"
             >
-              ← Switch to Release Version
+              ← Release Version
             </Link>
             <button onClick={loadEvents} title="Refresh"
               className="w-9 h-9 rounded-xl border border-slate-200 flex items-center justify-center text-slate-400 hover:text-[#06B6D4] transition-all">
@@ -407,10 +444,8 @@ export default function DashboardV2() {
 
         <main className="flex-1 p-6 space-y-5 overflow-auto">
 
-          {/* Zone 1 — Beacon Intelligence */}
           <BeaconIntelligence events={filteredEvents} schoolName={SCHOOL_NAME} />
 
-          {/* Zone 2 — 3 KPIs */}
           <div className="grid grid-cols-3 gap-5">
             <KPICard
               label="Total Prompts This Term"
@@ -433,10 +468,8 @@ export default function DashboardV2() {
             />
           </div>
 
-          {/* Zone 3 — Students needing attention today */}
-          <TodayPanel events={events} pulses={pulses} />
+          <TodayPanel events={events} pulses={pulses} acks={acks} snoozes={snoozes} />
 
-          {/* Zone 4 — Collapsible term overview */}
           <OverviewSection events={filteredEvents} term={term} setTerm={setTerm} />
 
         </main>

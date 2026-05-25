@@ -183,3 +183,52 @@ surfaces, and the rough remedy.
   pastoral lead email, optional Slack channel), and fire from
   `/api/triage/run` immediately after a row is upserted with
   `notify_immediately = true`.
+
+---
+
+## ⚠️ PRIVACY, DATA RETENTION & SAFEGUARDING COMPLIANCE
+### Do not implement without explicit instruction — return to this before any production work
+
+This section is intentionally incomplete. The team is working closely with experienced
+safeguarding professionals, school DSLs, and relevant advisors to define the correct
+approach before implementation. This must be fully resolved before any production launch.
+
+Topics that must be addressed in a dedicated session before implementation:
+
+**Data retention**
+- How long are beacon_events, sessions, triage results, and acknowledgements retained?
+- Automated deletion of records beyond the retention window
+- Manual erasure request flow (GDPR / UK data protection)
+- Pulse BehaviouralFingerprint must not incorporate events beyond the retention window
+- Policy must be defined per data type — raw events, aggregated scores, and triage
+  results may have different appropriate retention periods
+
+**Role-based access and data visibility**
+- Form tutors: own students only
+- Head of Year: their year group only
+- DSL and pastoral lead: full school visibility
+- MAT-level roles: cross-school visibility rules
+- No teacher should see another teacher's triage notes or acknowledgement history
+  without appropriate role permissions
+- UI, triage queue, and all Pulse outputs must enforce role-based filtering
+
+**Student privacy and age-appropriate transparency**
+- Should students know they are being monitored, and at what level?
+- UK children's rights frameworks and relevant legal obligations
+- Beacon needs a defined policy position before launch
+- System architecture should be designed to support whatever that position is
+
+**Third-party data sharing**
+- Rules governing what Pulse data can be shared with external agencies
+  (social services, CAMHS, police) and in what format
+- Structured safeguarding referral export must comply with these rules
+
+**Consent and lawful basis**
+- Lawful basis for processing under UK GDPR
+- School data processing agreements
+- Parental and student consent where required
+
+**Security**
+- Data encryption at rest and in transit
+- Access logging and audit trail requirements
+- Penetration testing requirements before launch
