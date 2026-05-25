@@ -30,6 +30,7 @@ import {
   type PulseSnooze,
   type SnoozeDuration,
 } from "@/lib/snooze";
+import { buildWeeklySummary, type WeeklySummary } from "@/lib/weekly_summary";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 
@@ -168,6 +169,18 @@ async function fetchTodaysTriage(schoolId: string): Promise<TriageResultRow[]> {
     .eq("school_id", schoolId)
     .gte("assessed_at", `${today}T00:00:00Z`)
     .lte("assessed_at", `${today}T23:59:59.999Z`)
+    .order("assessed_at", { ascending: false });
+  if (error || !data) return [];
+  return data as TriageResultRow[];
+}
+
+async function fetchRecentTriage(schoolId: string, days: number): Promise<TriageResultRow[]> {
+  const since = new Date(Date.now() - days * 86400000).toISOString();
+  const { data, error } = await supabase
+    .from("beacon_triage_results")
+    .select("id,school_id,student_id,assessed_at,triage,concern_summary,suggested_action,notify_immediately,reasoning,requested_by")
+    .eq("school_id", schoolId)
+    .gte("assessed_at", since)
     .order("assessed_at", { ascending: false });
   if (error || !data) return [];
   return data as TriageResultRow[];
@@ -1129,10 +1142,214 @@ function TriageCard({
   );
 }
 
+function WeeklySummaryCard({
+  summary,
+  onViewProfile,
+}: {
+  summary:       WeeklySummary;
+  onViewProfile: (studentId: string) => void;
+}) {
+  // Default-open on Mondays per spec; collapsed other days. User toggle overrides.
+  const [open, setOpen] = useState(summary.is_monday);
+
+  const trendDelta = summary.school_avg_delta;
+  const trendColor = trendDelta > 3  ? "text-red-600"
+                   : trendDelta < -3 ? "text-emerald-600"
+                   : "text-slate-500";
+  const trendArrow = trendDelta > 3 ? "↑" : trendDelta < -3 ? "↓" : "→";
+
+  const eventDelta = summary.events_this_week - summary.events_last_week;
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-50 transition-colors"
+      >
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">📊 WEEKLY SUMMARY</span>
+          <span className="text-sm font-semibold text-slate-700">{summary.week_label}</span>
+          {summary.is_monday && (
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-100 text-cyan-700">Monday digest</span>
+          )}
+          <span className="text-xs text-slate-500">
+            {summary.attention_students.length} need attention · {summary.acks_this_week.total} acks · {summary.active_students_this_week} active students
+          </span>
+        </div>
+        <span className="text-slate-400 text-sm">{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4 space-y-4 border-t border-slate-100 pt-4">
+
+          {/* Trend tiles */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="rounded-xl bg-slate-50 p-3">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">School avg pulse</div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-bold text-slate-700">{summary.school_avg_this_week}</span>
+                <span className={`text-xs font-semibold ${trendColor}`}>
+                  {trendArrow} {Math.abs(trendDelta)} vs last week
+                </span>
+              </div>
+            </div>
+            <div className="rounded-xl bg-slate-50 p-3">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Events this week</div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-bold text-slate-700">{summary.events_this_week}</span>
+                <span className={`text-xs font-semibold ${eventDelta > 0 ? "text-amber-600" : eventDelta < 0 ? "text-slate-500" : "text-slate-500"}`}>
+                  {eventDelta >= 0 ? "+" : ""}{eventDelta} vs last week
+                </span>
+              </div>
+            </div>
+            <div className="rounded-xl bg-amber-50 p-3">
+              <div className="text-[10px] font-bold text-amber-700 uppercase tracking-wider mb-1">Re-emergences</div>
+              <div className="text-2xl font-bold text-amber-800">{summary.re_emergence_students.length}</div>
+              <div className="text-[11px] text-amber-700 mt-0.5">Previously acknowledged patterns back</div>
+            </div>
+            <div className="rounded-xl bg-emerald-50 p-3">
+              <div className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider mb-1">Improvements</div>
+              <div className="text-2xl font-bold text-emerald-800">{summary.improvement_students.length}</div>
+              <div className="text-[11px] text-emerald-700 mt-0.5">Students dropped a tier</div>
+            </div>
+          </div>
+
+          {/* Attention list */}
+          {summary.attention_students.length > 0 && (
+            <div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">
+                Required attention this week · {summary.attention_students.length}
+              </div>
+              <div className="space-y-1">
+                {summary.attention_students.slice(0, 8).map(s => (
+                  <div key={s.student_id} className="flex items-center justify-between text-xs px-3 py-2 rounded-lg bg-slate-50 hover:bg-slate-100">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${TRIAGE_STYLE[s.highest_triage].chip}`}>
+                        {TRIAGE_STYLE[s.highest_triage].label}
+                      </span>
+                      <span className="font-semibold text-slate-700">{s.student_id}</span>
+                      <span className="text-slate-400">in queue {s.days_in_queue} day{s.days_in_queue === 1 ? "" : "s"}</span>
+                      {s.notify_count > 0 && (
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700">
+                          {s.notify_count}× notify
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => onViewProfile(s.student_id)}
+                      className="text-[11px] text-slate-500 hover:text-[#06B6D4] shrink-0"
+                    >
+                      View →
+                    </button>
+                  </div>
+                ))}
+                {summary.attention_students.length > 8 && (
+                  <div className="text-[11px] text-slate-400 text-center py-1">
+                    + {summary.attention_students.length - 8} more
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Re-emergence + improvement + regression rows */}
+          <div className="grid md:grid-cols-3 gap-3">
+            <div className="rounded-xl bg-amber-50/40 border border-amber-100 p-3">
+              <div className="text-[10px] font-bold text-amber-700 uppercase tracking-wider mb-2">Re-emerged</div>
+              {summary.re_emergence_students.length === 0
+                ? <div className="text-xs text-slate-400">None this week</div>
+                : <div className="space-y-1">
+                    {summary.re_emergence_students.slice(0, 5).map(id => (
+                      <button key={id} onClick={() => onViewProfile(id)}
+                        className="block text-xs text-slate-700 font-semibold hover:text-[#06B6D4]">
+                        {id}
+                      </button>
+                    ))}
+                    {summary.re_emergence_students.length > 5 && (
+                      <div className="text-[11px] text-amber-700">+ {summary.re_emergence_students.length - 5} more</div>
+                    )}
+                  </div>
+              }
+            </div>
+            <div className="rounded-xl bg-emerald-50/40 border border-emerald-100 p-3">
+              <div className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider mb-2">Improving</div>
+              {summary.improvement_students.length === 0
+                ? <div className="text-xs text-slate-400">No tier drops this week</div>
+                : <div className="space-y-1">
+                    {summary.improvement_students.slice(0, 5).map(s => (
+                      <button key={s.student_id} onClick={() => onViewProfile(s.student_id)}
+                        className="block text-xs text-slate-700 hover:text-[#06B6D4]">
+                        <span className="font-semibold">{s.student_id}</span>{" "}
+                        <span className="text-slate-500">{s.from} → {s.to}</span>
+                      </button>
+                    ))}
+                    {summary.improvement_students.length > 5 && (
+                      <div className="text-[11px] text-emerald-700">+ {summary.improvement_students.length - 5} more</div>
+                    )}
+                  </div>
+              }
+            </div>
+            <div className="rounded-xl bg-red-50/40 border border-red-100 p-3">
+              <div className="text-[10px] font-bold text-red-700 uppercase tracking-wider mb-2">Regressed</div>
+              {summary.regression_students.length === 0
+                ? <div className="text-xs text-slate-400">No tier rises this week</div>
+                : <div className="space-y-1">
+                    {summary.regression_students.slice(0, 5).map(s => (
+                      <button key={s.student_id} onClick={() => onViewProfile(s.student_id)}
+                        className="block text-xs text-slate-700 hover:text-[#06B6D4]">
+                        <span className="font-semibold">{s.student_id}</span>{" "}
+                        <span className="text-slate-500">{s.from} → {s.to}</span>
+                      </button>
+                    ))}
+                    {summary.regression_students.length > 5 && (
+                      <div className="text-[11px] text-red-700">+ {summary.regression_students.length - 5} more</div>
+                    )}
+                  </div>
+              }
+            </div>
+          </div>
+
+          {/* Ack breakdown + top categories */}
+          <div className="grid md:grid-cols-2 gap-3">
+            <div className="rounded-xl bg-slate-50 p-3">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Acknowledgements this week</div>
+              {summary.acks_this_week.total === 0
+                ? <div className="text-xs text-slate-400">No acknowledgements logged</div>
+                : <div className="flex items-center gap-3 flex-wrap text-xs">
+                    <span><span className="font-bold text-slate-700">{summary.acks_this_week.total}</span> total</span>
+                    {summary.acks_this_week.monitored > 0 && <span className="text-slate-600">{summary.acks_this_week.monitored} monitored</span>}
+                    {summary.acks_this_week.referred  > 0 && <span className="text-violet-700">{summary.acks_this_week.referred} referred</span>}
+                    {summary.acks_this_week.escalated > 0 && <span className="text-red-700">{summary.acks_this_week.escalated} escalated</span>}
+                    {summary.acks_this_week.no_action > 0 && <span className="text-slate-500">{summary.acks_this_week.no_action} no action</span>}
+                  </div>
+              }
+            </div>
+            <div className="rounded-xl bg-slate-50 p-3">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Top categories this week</div>
+              {summary.top_categories.length === 0
+                ? <div className="text-xs text-slate-400">No flagged categories</div>
+                : <div className="flex items-center gap-2 flex-wrap">
+                    {summary.top_categories.map(c => (
+                      <span key={c.name} className="text-[11px] px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-600">
+                        {c.name} · <span className="font-bold text-slate-700">{c.count}</span>
+                      </span>
+                    ))}
+                  </div>
+              }
+            </div>
+          </div>
+
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TriageQueue({
   results,
   pulsesById,
   snoozes,
+  weeklySummary,
   loading,
   running,
   runError,
@@ -1147,6 +1364,7 @@ function TriageQueue({
   results:          TriageResultRow[];
   pulsesById:       Map<string, StudentPulseV3>;
   snoozes:          PulseSnooze[];
+  weeklySummary:    WeeklySummary | null;
   loading:          boolean;
   running:          boolean;
   runError:         string | null;
@@ -1245,6 +1463,11 @@ function TriageQueue({
           {runError && <span className="text-[11px] text-red-600">{runError}</span>}
         </div>
       </div>
+
+      {/* Weekly summary */}
+      {weeklySummary && (
+        <WeeklySummaryCard summary={weeklySummary} onViewProfile={onViewProfile} />
+      )}
 
       {/* Urgent banner */}
       {urgent.length > 0 && (
@@ -1444,6 +1667,7 @@ function PulseBetaPageContent() {
   const [snoozes, setSnoozes] = useState<PulseSnooze[]>([]);
   const [snoozesVersion, setSnoozesVersion] = useState(0);
   const [snoozingId, setSnoozingId] = useState<string | null>(null);
+  const [weeklyTriage, setWeeklyTriage] = useState<TriageResultRow[]>([]);
 
   useEffect(() => {
     fetchAllEvents({ ascending: true })
@@ -1460,6 +1684,9 @@ function PulseBetaPageContent() {
 
   useEffect(() => {
     fetchTodaysTriage(SCHOOL_ID).then(setTriage);
+    // Weekly summary needs the last 7 days; pulled alongside so a triage run
+    // refreshes both. 8 days covers Monday-load when "this week" spans 0-7d.
+    fetchRecentTriage(SCHOOL_ID, 8).then(setWeeklyTriage);
   }, [triageVersion]);
 
   useEffect(() => {
@@ -1596,6 +1823,18 @@ function PulseBetaPageContent() {
     () => new Map(pulses.map(p => [p.student_id, p])),
     [pulses],
   );
+
+  const weeklySummary = useMemo(() => {
+    // Skip when nothing's loaded yet — avoids flashing a zeroed summary
+    // before the first events query returns.
+    if (!events.length && !weeklyTriage.length) return null;
+    return buildWeeklySummary({
+      pulses,
+      triage: weeklyTriage,
+      acks,
+      events,
+    });
+  }, [pulses, weeklyTriage, acks, events]);
 
   const runTriage = useCallback(async (force: boolean) => {
     setTriageRunning(true);
@@ -1747,6 +1986,7 @@ function PulseBetaPageContent() {
               results={triage}
               pulsesById={pulsesById}
               snoozes={snoozes}
+              weeklySummary={weeklySummary}
               loading={loading}
               running={triageRunning}
               runError={triageError}
