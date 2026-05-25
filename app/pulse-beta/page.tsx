@@ -2340,8 +2340,7 @@ function TriageQueue({
   const urgent      = visibleResults.filter(r => !r.reviewed_at && (r.notify_immediately || r.triage === "urgent"));
   const actionable  = visibleResults.filter(r => !r.reviewed_at && !urgent.includes(r) && r.triage !== "silent_monitoring");
   const monitoring  = visibleResults.filter(r => r.triage === "silent_monitoring" || !!r.reviewed_at);
-  const [monitorOpen, setMonitorOpen] = useState(false);
-  const [snoozedOpen, setSnoozedOpen] = useState(false);
+  const [acknowledgedOpen, setAcknowledgedOpen] = useState(false);
 
   const snoozedList = useMemo(
     () => Array.from(activeSnoozeByStudent.values())
@@ -2366,7 +2365,7 @@ function TriageQueue({
           <p className="text-xs text-slate-500 mt-1">
             {results.length === 0
               ? "Today's triage hasn't been run yet."
-              : `${results.length} student${results.length === 1 ? "" : "s"} assessed today · ${monitoring.length} in silent monitoring · ${snoozedList.length} snoozed`}
+              : `${results.length} student${results.length === 1 ? "" : "s"} assessed today · ${monitoring.length + snoozedList.length} acknowledged`}
           </p>
         </div>
         <div className="flex flex-col items-end gap-1">
@@ -2451,29 +2450,30 @@ function TriageQueue({
         </div>
       )}
 
-      {/* Snoozed (collapsed) */}
-      {snoozedList.length > 0 && (
+      {/* Acknowledged — snoozed + monitoring combined */}
+      {(snoozedList.length > 0 || monitoring.length > 0) && (
         <div className="rounded-2xl border border-slate-100 bg-white">
           <button
-            onClick={() => setSnoozedOpen(o => !o)}
+            onClick={() => setAcknowledgedOpen(o => !o)}
             className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-50 transition-colors"
           >
             <div className="flex items-center gap-3">
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-100 text-cyan-700">💤 SNOOZED</span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">ACKNOWLEDGED</span>
               <span className="text-xs text-slate-500">
-                {snoozedList.length} student{snoozedList.length === 1 ? "" : "s"} — hidden from queue
+                {snoozedList.length + monitoring.length} student{snoozedList.length + monitoring.length !== 1 ? "s" : ""} — no action needed
               </span>
             </div>
-            <span className="text-slate-400 text-sm">{snoozedOpen ? "▲" : "▼"}</span>
+            <span className="text-slate-400 text-sm">{acknowledgedOpen ? "▲" : "▼"}</span>
           </button>
-          {snoozedOpen && (
+          {acknowledgedOpen && (
             <div className="px-4 pb-4 space-y-2">
+              {/* Snoozed first */}
               {snoozedList.map(s => (
                 <div key={s.id} className="text-xs text-slate-600 px-3 py-2 rounded-lg bg-cyan-50/50 border border-cyan-100 flex items-center justify-between gap-2 flex-wrap">
                   <div className="flex items-center gap-2 min-w-0 flex-wrap">
                     <span className="font-semibold text-slate-700">{s.student_id}</span>
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-white text-cyan-700 border border-cyan-200">
-                      {snoozeLabel(s, now)}
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-cyan-100 text-cyan-700">
+                      💤 {snoozeLabel(s, now)}
                     </span>
                     <span className="text-slate-400 text-[11px]">by {s.snoozed_by}</span>
                     {s.reason && <span className="text-slate-400 text-[11px] italic truncate max-w-md">"{s.reason}"</span>}
@@ -2495,36 +2495,21 @@ function TriageQueue({
                   </div>
                 </div>
               ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Silent monitoring (collapsed) */}
-      {monitoring.length > 0 && (
-        <div className="rounded-2xl border border-slate-100 bg-white">
-          <button
-            onClick={() => setMonitorOpen(o => !o)}
-            className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-50 transition-colors"
-          >
-            <div className="flex items-center gap-3">
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">SILENT MONITORING</span>
-              <span className="text-xs text-slate-500">{monitoring.length} student{monitoring.length === 1 ? "" : "s"} — no action needed</span>
-            </div>
-            <span className="text-slate-400 text-sm">{monitorOpen ? "▲" : "▼"}</span>
-          </button>
-          {monitorOpen && (
-            <div className="px-4 pb-4 space-y-2">
+              {/* Monitoring / reviewed below */}
               {monitoring.map(r => (
-                <div key={r.id} className="text-xs text-slate-500 px-3 py-2 rounded-lg bg-slate-50 flex items-center justify-between gap-2">
+                <div key={r.id} className="text-xs text-slate-500 px-3 py-2 rounded-lg bg-slate-50 border border-slate-100 flex items-center justify-between gap-2 flex-wrap">
                   <div className="flex items-center gap-2 min-w-0 flex-wrap">
                     <span className="font-semibold text-slate-700">{r.student_id}</span>
-                    {r.reviewed_at && (
-                      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
+                    {r.reviewed_at ? (
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
                         ✓ Reviewed
                       </span>
+                    ) : (
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">
+                        Monitoring
+                      </span>
                     )}
-                    <span className="text-slate-400 truncate">{r.concern_summary ?? "Stable activity, previously reviewed"}</span>
+                    <span className="text-slate-400 truncate">{r.concern_summary ?? "Stable activity"}</span>
                   </div>
                   <button
                     onClick={() => onViewProfile(r.student_id)}
