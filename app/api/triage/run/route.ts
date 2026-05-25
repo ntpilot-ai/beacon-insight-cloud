@@ -143,30 +143,60 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Upsert into beacon_triage_results ──
-  // The unique index is on (school_id, student_id, day-of-assessed_at). Insert
-  // first; on 23505 conflict, delete today's row for that student and re-insert
-  // (cleaner than building a Postgres ON CONFLICT clause across a derived day).
+  // The unique index is on (school_id, student_id, day-of-assessed_at), which
+  // ON CONFLICT can't target (expression index, not a constraint). So we
+  // UPDATE today's row first; if no rows match, INSERT. The anon RLS grants
+  // SELECT/INSERT/UPDATE but not DELETE, so the previous delete-then-insert
+  // pattern silently lost re-run verdicts under RLS.
+  const dayStart = `${todayUtc}T00:00:00Z`;
+  const dayEnd   = `${todayUtc}T23:59:59.999Z`;
+  let upsertedCount = 0;
+
   for (const r of results) {
-    const insert = await supabase.from("beacon_triage_results").insert(r).select().single();
-    if (insert.error && insert.error.code === "23505") {
-      const dayStart = `${todayUtc}T00:00:00Z`;
-      const dayEnd   = `${todayUtc}T23:59:59.999Z`;
-      await supabase.from("beacon_triage_results")
-        .delete()
-        .eq("school_id",  r.school_id)
-        .eq("student_id", r.student_id)
-        .gte("assessed_at", dayStart)
-        .lte("assessed_at", dayEnd);
-      await supabase.from("beacon_triage_results").insert(r);
-    } else if (insert.error) {
-      failures.push({ student_id: r.student_id, error: `Insert failed: ${insert.error.message}` });
+    const updatePatch = {
+      assessed_at:        r.assessed_at,
+      triage:             r.triage,
+      concern_summary:    r.concern_summary,
+      suggested_action:   r.suggested_action,
+      notify_immediately: r.notify_immediately,
+      reasoning:          r.reasoning,
+      input_snapshot:     r.input_snapshot,
+      model_version:      r.model_version,
+      requested_by:       r.requested_by,
+    };
+
+    const updateRes = await supabase
+      .from("beacon_triage_results")
+      .update(updatePatch)
+      .eq("school_id",  r.school_id)
+      .eq("student_id", r.student_id)
+      .gte("assessed_at", dayStart)
+      .lte("assessed_at", dayEnd)
+      .select();
+
+    if (updateRes.error) {
+      failures.push({ student_id: r.student_id, error: `Update failed: ${updateRes.error.message}` });
+      continue;
+    }
+
+    if (updateRes.data && updateRes.data.length > 0) {
+      upsertedCount++;
+      continue;
+    }
+
+    // No existing row for today — insert fresh.
+    const insertRes = await supabase.from("beacon_triage_results").insert(r);
+    if (insertRes.error) {
+      failures.push({ student_id: r.student_id, error: `Insert failed: ${insertRes.error.message}` });
+    } else {
+      upsertedCount++;
     }
   }
 
   return NextResponse.json({
     status:    "ok",
     processed: candidates.length,
-    succeeded: results.length,
+    succeeded: upsertedCount,
     failed:    failures.length,
     snoozed_skipped: skippedSnoozed.length,
     snoozes_broken:  brokenSnoozes.length,
