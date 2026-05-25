@@ -94,6 +94,36 @@ async function fetchSessionAnalyses(schoolId: string): Promise<SessionAnalysis[]
   return data as SessionAnalysis[];
 }
 
+// ── Triage queue (Phase 3) ────────────────────────────────────────────────────
+
+type TriageLevel = "silent_monitoring" | "low" | "medium" | "high" | "urgent";
+
+interface TriageResultRow {
+  id:                 string;
+  school_id:          string;
+  student_id:         string;
+  assessed_at:        string;
+  triage:             TriageLevel;
+  concern_summary:    string | null;
+  suggested_action:   string | null;
+  notify_immediately: boolean;
+  reasoning:          string | null;
+  requested_by:       string | null;
+}
+
+async function fetchTodaysTriage(schoolId: string): Promise<TriageResultRow[]> {
+  const today = new Date().toISOString().slice(0, 10);
+  const { data, error } = await supabase
+    .from("beacon_triage_results")
+    .select("id,school_id,student_id,assessed_at,triage,concern_summary,suggested_action,notify_immediately,reasoning,requested_by")
+    .eq("school_id", schoolId)
+    .gte("assessed_at", `${today}T00:00:00Z`)
+    .lte("assessed_at", `${today}T23:59:59.999Z`)
+    .order("assessed_at", { ascending: false });
+  if (error || !data) return [];
+  return data as TriageResultRow[];
+}
+
 // Cap per page load. Each call now only runs the local sentiment pre-filter
 // + a Supabase insert (no LLM, no API cost), so this is just throttling DB
 // writes rather than money. Sessions are processed in parallel batches
@@ -857,6 +887,264 @@ function StudentDetail({
   );
 }
 
+// ── Triage queue ──────────────────────────────────────────────────────────────
+
+const TRIAGE_STYLE: Record<TriageLevel, { label: string; ring: string; bar: string; chip: string; sort: number }> = {
+  urgent:             { label: "URGENT",       ring: "border-red-500",     bar: "#DC2626", chip: "bg-red-600 text-white animate-pulse",  sort: 0 },
+  high:               { label: "HIGH",         ring: "border-red-300",     bar: "#DC2626", chip: "bg-red-100 text-red-700",              sort: 1 },
+  medium:             { label: "MEDIUM",       ring: "border-amber-300",   bar: "#F59E0B", chip: "bg-amber-100 text-amber-700",          sort: 2 },
+  low:                { label: "LOW",          ring: "border-slate-300",   bar: "#64748B", chip: "bg-slate-200 text-slate-700",          sort: 3 },
+  silent_monitoring:  { label: "MONITORING",   ring: "border-slate-200",   bar: "#94A3B8", chip: "bg-slate-100 text-slate-500",          sort: 4 },
+};
+
+function TriageCard({
+  row,
+  pulse,
+  onReview,
+  onViewProfile,
+  reviewing,
+}: {
+  row:           TriageResultRow;
+  pulse?:        StudentPulseV3;
+  onReview:      (studentId: string) => Promise<void>;
+  onViewProfile: (studentId: string) => void;
+  reviewing:     boolean;
+}) {
+  const style = TRIAGE_STYLE[row.triage];
+  const cats  = pulse?.categories.slice(0, 3) ?? [];
+
+  return (
+    <div className={`rounded-2xl border-l-4 ${style.ring} bg-white border border-slate-100 p-4 hover:shadow-sm transition-shadow`}>
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div className="flex items-center gap-2 flex-wrap min-w-0">
+          <span className={`text-[10px] font-bold tracking-wide px-2 py-0.5 rounded-full ${style.chip}`}>
+            {style.label}
+          </span>
+          <span className="font-semibold text-slate-800 text-sm">{row.student_id}</span>
+          {row.notify_immediately && (
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-600 text-white">
+              📣 Notify
+            </span>
+          )}
+          {pulse?.re_emergence && (
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700" title="Re-emergence of previously acknowledged pattern">
+              ↩ Re-emerged
+            </span>
+          )}
+          {pulse?.rapid_escalation && (
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700" title="Rapid escalation in last 3 days">
+              ⚡ Rapid
+            </span>
+          )}
+          {cats.map(c => (
+            <span key={c.name} className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">
+              {c.name}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {row.concern_summary && (
+        <p className="text-sm text-slate-700 mb-2 leading-snug">{row.concern_summary}</p>
+      )}
+      {row.suggested_action && (
+        <p className="text-xs text-slate-500 mb-3 leading-snug">
+          <span className="font-semibold text-slate-600">Suggested action:</span> {row.suggested_action}
+        </p>
+      )}
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          onClick={() => onReview(row.student_id)}
+          disabled={reviewing}
+          className="text-xs font-semibold text-white bg-[#06B6D4] px-3 py-1.5 rounded-xl hover:bg-cyan-600 disabled:opacity-50 transition-all"
+        >
+          {reviewing ? "Marking…" : "Mark reviewed"}
+        </button>
+        <button
+          disabled
+          title="Snooze available in next iteration"
+          className="text-xs font-semibold text-slate-400 border border-slate-200 px-3 py-1.5 rounded-xl cursor-not-allowed"
+        >
+          Snooze ▾
+        </button>
+        <button
+          onClick={() => onViewProfile(row.student_id)}
+          className="text-xs font-semibold text-slate-500 border border-slate-200 px-3 py-1.5 rounded-xl hover:border-[#06B6D4] hover:text-[#06B6D4] transition-all"
+        >
+          View full profile →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TriageQueue({
+  results,
+  pulsesById,
+  loading,
+  running,
+  runError,
+  onRunTriage,
+  onReview,
+  onViewProfile,
+  reviewingId,
+}: {
+  results:       TriageResultRow[];
+  pulsesById:    Map<string, StudentPulseV3>;
+  loading:       boolean;
+  running:       boolean;
+  runError:      string | null;
+  onRunTriage:   (force: boolean) => void;
+  onReview:      (studentId: string) => Promise<void>;
+  onViewProfile: (studentId: string) => void;
+  reviewingId:   string | null;
+}) {
+  const sorted = useMemo(() =>
+    [...results].sort((a, b) => {
+      if (a.notify_immediately !== b.notify_immediately) return a.notify_immediately ? -1 : 1;
+      return TRIAGE_STYLE[a.triage].sort - TRIAGE_STYLE[b.triage].sort;
+    }),
+    [results],
+  );
+
+  const urgent      = sorted.filter(r => r.notify_immediately || r.triage === "urgent");
+  const actionable  = sorted.filter(r => !urgent.includes(r) && r.triage !== "silent_monitoring");
+  const monitoring  = sorted.filter(r => r.triage === "silent_monitoring");
+  const [monitorOpen, setMonitorOpen] = useState(false);
+
+  const attentionCount = urgent.length + actionable.length;
+  const greeting       = greetingForNow();
+
+  return (
+    <div className="max-w-4xl mx-auto px-6 py-6 space-y-4">
+
+      {/* Header + run-triage controls */}
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800">
+            {greeting}. {attentionCount === 0
+              ? "no students need your attention today."
+              : `${attentionCount} student${attentionCount === 1 ? "" : "s"} need your attention today.`}
+          </h2>
+          <p className="text-xs text-slate-500 mt-1">
+            {results.length === 0
+              ? "Today's triage hasn't been run yet."
+              : `${results.length} student${results.length === 1 ? "" : "s"} assessed today · ${monitoring.length} in silent monitoring`}
+          </p>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <button
+            onClick={() => onRunTriage(results.length > 0)}
+            disabled={running}
+            className="text-xs font-semibold text-white bg-[#06B6D4] px-4 py-2 rounded-xl hover:bg-cyan-600 disabled:opacity-50 transition-all"
+          >
+            {running
+              ? "Running triage…"
+              : results.length > 0
+                ? "🔄 Re-run today's triage"
+                : "▶ Run today's triage"}
+          </button>
+          {runError && <span className="text-[11px] text-red-600">{runError}</span>}
+        </div>
+      </div>
+
+      {/* Urgent banner */}
+      {urgent.length > 0 && (
+        <div className="rounded-2xl border-2 border-red-500 bg-red-50/50 p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-red-600 text-white animate-pulse">
+              📣 URGENT — IMMEDIATE ATTENTION
+            </span>
+            <span className="text-xs text-slate-500">{urgent.length} student{urgent.length === 1 ? "" : "s"}</span>
+          </div>
+          <div className="space-y-3">
+            {urgent.map(r => (
+              <TriageCard
+                key={r.id}
+                row={r}
+                pulse={pulsesById.get(r.student_id)}
+                onReview={onReview}
+                onViewProfile={onViewProfile}
+                reviewing={reviewingId === r.student_id}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Actionable queue */}
+      {actionable.length > 0 && (
+        <div className="space-y-3">
+          {actionable.map(r => (
+            <TriageCard
+              key={r.id}
+              row={r}
+              pulse={pulsesById.get(r.student_id)}
+              onReview={onReview}
+              onViewProfile={onViewProfile}
+              reviewing={reviewingId === r.student_id}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!loading && results.length === 0 && (
+        <div className="text-center py-12 text-slate-400 text-sm border border-dashed border-slate-200 rounded-2xl">
+          No triage results for today yet. Click <strong>Run today's triage</strong> above to score active students.
+        </div>
+      )}
+      {!loading && results.length > 0 && attentionCount === 0 && (
+        <div className="text-center py-8 text-slate-400 text-sm border border-dashed border-slate-200 rounded-2xl">
+          No students require attention today. All active students are in silent monitoring.
+        </div>
+      )}
+
+      {/* Silent monitoring (collapsed) */}
+      {monitoring.length > 0 && (
+        <div className="rounded-2xl border border-slate-100 bg-white">
+          <button
+            onClick={() => setMonitorOpen(o => !o)}
+            className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-50 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">SILENT MONITORING</span>
+              <span className="text-xs text-slate-500">{monitoring.length} student{monitoring.length === 1 ? "" : "s"} — no action needed</span>
+            </div>
+            <span className="text-slate-400 text-sm">{monitorOpen ? "▲" : "▼"}</span>
+          </button>
+          {monitorOpen && (
+            <div className="px-4 pb-4 space-y-2">
+              {monitoring.map(r => (
+                <div key={r.id} className="text-xs text-slate-500 px-3 py-2 rounded-lg bg-slate-50 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-semibold text-slate-700">{r.student_id}</span>
+                    <span className="text-slate-400 truncate">{r.concern_summary ?? "Stable activity, previously reviewed"}</span>
+                  </div>
+                  <button
+                    onClick={() => onViewProfile(r.student_id)}
+                    className="text-[11px] text-slate-500 hover:text-[#06B6D4] shrink-0"
+                  >
+                    View →
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function greetingForNow(): string {
+  const h = new Date().getHours();
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  return "Good evening";
+}
+
 // ── Student list item ─────────────────────────────────────────────────────────
 function StudentListItem({ pulse, isActive, onClick }: { pulse: StudentPulseV3; isActive: boolean; onClick: () => void }) {
   const alert = ALERT[pulse.alert_level];
@@ -894,6 +1182,14 @@ function PulseBetaPageContent() {
   const [search, setSearch]     = useState("");
   const [openTiers, setOpenTiers] = useState<Record<string, boolean>>({ critical: true, high: false, medium: false, low: false });
 
+  // Phase 3 triage queue state
+  const [tab, setTab] = useState<"queue" | "all">("queue");
+  const [triage, setTriage] = useState<TriageResultRow[]>([]);
+  const [triageVersion, setTriageVersion] = useState(0);
+  const [triageRunning, setTriageRunning] = useState(false);
+  const [triageError, setTriageError] = useState<string | null>(null);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+
   useEffect(() => {
     fetchAllEvents({ ascending: true })
       .then(data => { setEvents(data); setLoading(false); });
@@ -906,6 +1202,10 @@ function PulseBetaPageContent() {
   useEffect(() => {
     fetchSessionAnalyses(SCHOOL_ID).then(setAnalyses);
   }, [analysesVersion]);
+
+  useEffect(() => {
+    fetchTodaysTriage(SCHOOL_ID).then(setTriage);
+  }, [triageVersion]);
 
   // Step 4: when events arrive, kick off LLM analysis for any triggered,
   // settled session that's still unanalysed. Capped per load. Sequential —
@@ -1033,6 +1333,64 @@ function PulseBetaPageContent() {
     setAnalysesVersion(v => v + 1);
   }, []);
 
+  const pulsesById = useMemo(
+    () => new Map(pulses.map(p => [p.student_id, p])),
+    [pulses],
+  );
+
+  const runTriage = useCallback(async (force: boolean) => {
+    setTriageRunning(true);
+    setTriageError(null);
+    try {
+      const { data: { session: authSession } } = await supabase.auth.getSession();
+      const email = authSession?.user?.email ?? "unknown";
+      const res = await fetch("/api/triage/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requested_by: email, school_id: SCHOOL_ID, force }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setTriageError(body?.error || `Request failed (${res.status})`);
+      } else if (body?.failed > 0) {
+        setTriageError(`${body.succeeded} processed, ${body.failed} failed (see server logs)`);
+      }
+      setTriageVersion(v => v + 1);
+    } catch (err: any) {
+      setTriageError(err?.message || "Failed to run triage");
+    } finally {
+      setTriageRunning(false);
+    }
+  }, []);
+
+  const reviewFromQueue = useCallback(async (studentId: string) => {
+    const pulse = pulsesById.get(studentId);
+    if (!pulse) return;
+    setReviewingId(studentId);
+    try {
+      const dominantCategory = pulse.categories[0]?.name ?? null;
+      const ok = await insertAcknowledgement({
+        student_id:        studentId,
+        alert_level:       pulse.alert_level,
+        dominant_category: dominantCategory,
+        action_taken:      "monitored",
+        notes:             "Marked reviewed from triage queue",
+      });
+      if (ok) {
+        setAcksVersion(v => v + 1);
+        setTriage(prev => prev.filter(r => r.student_id !== studentId));
+      }
+    } finally {
+      setReviewingId(null);
+    }
+  }, [pulsesById]);
+
+  const viewProfileFromQueue = useCallback((studentId: string) => {
+    const pulse = pulsesById.get(studentId);
+    if (pulse) setSelected(pulse);
+    setTab("all");
+  }, [pulsesById]);
+
   const acknowledgeSelected = useCallback(async (action: AcknowledgeAction, notes: string) => {
     if (!selected) return;
     const dominantCategory = selected.categories[0]?.name ?? null;
@@ -1075,12 +1433,48 @@ function PulseBetaPageContent() {
               <p className="text-xs text-slate-400">School avg: {schoolAvg} · {pulses.length} students · {acks.length} acks</p>
             </div>
           </div>
-          <Link href="/pulse"
-            className="text-xs font-semibold text-slate-500 border border-slate-200 px-3 py-1.5 rounded-xl hover:border-[#06B6D4] hover:text-[#06B6D4] transition-all">
-            ← Release Version
-          </Link>
+          <div className="flex items-center gap-2">
+            <div className="inline-flex rounded-xl border border-slate-200 p-0.5 bg-slate-50">
+              <button
+                onClick={() => setTab("queue")}
+                className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-all ${
+                  tab === "queue" ? "bg-white text-[#06B6D4] shadow-sm" : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                Today's Queue
+              </button>
+              <button
+                onClick={() => setTab("all")}
+                className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-all ${
+                  tab === "all" ? "bg-white text-[#06B6D4] shadow-sm" : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                All students
+              </button>
+            </div>
+            <Link href="/pulse"
+              className="text-xs font-semibold text-slate-500 border border-slate-200 px-3 py-1.5 rounded-xl hover:border-[#06B6D4] hover:text-[#06B6D4] transition-all">
+              ← Release Version
+            </Link>
+          </div>
         </header>
 
+        {tab === "queue" ? (
+          <div className="flex-1 overflow-auto bg-[#F0F2F8]">
+            <TriageQueue
+              results={triage}
+              pulsesById={pulsesById}
+              loading={loading}
+              running={triageRunning}
+              runError={triageError}
+              onRunTriage={runTriage}
+              onReview={reviewFromQueue}
+              onViewProfile={viewProfileFromQueue}
+              reviewingId={reviewingId}
+            />
+          </div>
+        ) : (
+        <>
         {/* Search bar */}
         <div className="bg-white border-b border-slate-100 px-4 py-2 flex items-center shrink-0">
           <input type="text" value={search} onChange={e => setSearch(e.target.value)}
@@ -1134,6 +1528,8 @@ function PulseBetaPageContent() {
           </div>
 
         </div>
+        </>
+        )}
       </div>
     </div>
   );
