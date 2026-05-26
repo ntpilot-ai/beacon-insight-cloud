@@ -73,7 +73,6 @@ export interface BehaviouralFingerprint {
 export interface StudentPulseV3 {
   student_id:        string;
   pulse_score:       number;
-  raw_score:         number;
   trend:             number[];
   trend_direction:   "rising" | "falling" | "stable";
   trend_shape:       TrendShape;
@@ -86,6 +85,10 @@ export interface StudentPulseV3 {
   first_seen:        string;
   last_seen:         string;
   alert_level:       "critical" | "high" | "medium" | "low";
+  // INVARIANT: vs_school_avg is informational context only — it must NEVER be
+  // used to suppress alerts, reduce pulse_score, or lower alert_level. A school
+  // with a generally high-risk cohort would otherwise mask the students who
+  // most need attention. Render in muted slate in the UI, not in a risk colour.
   vs_school_avg?:    number;
 
   // v3 additions
@@ -93,6 +96,7 @@ export interface StudentPulseV3 {
   re_emergence:      boolean;
   last_acknowledged?: PulseAcknowledgement;
   context_boost:     number;
+  layer3_active:     boolean;
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -189,7 +193,7 @@ function signalEscalation(buckets: Record<string, DayBucket>): PulseSignal {
   return {
     id: "escalation", label: "Risk Escalation", score, weight: 25,
     detail: delta > 0.2
-      ? `High-risk prompts up sharply (${(lateRate * 100).toFixed(0)}% vs ${(earlyRate * 100).toFixed(0)}% earlier)`
+      ? `${lateHigh} of ${lateTotal} recent prompt${lateTotal !== 1 ? "s" : ""} were high-risk (up from ${earlyHigh} of ${earlyTotal} earlier)`
       : delta > 0.05 ? "Slight upward trend in risk level"
       : "Risk level consistent over the live window",
   };
@@ -424,10 +428,14 @@ function calculatePulseV3(
     .sort((a, b) => ts(b.acknowledged_at) - ts(a.acknowledged_at));
   const lastAck = studentAcks[0];
 
-  // Fingerprint window ends at max(7 days ago, last_ack timestamp).
-  // The ack effectively extends the "known baseline" up to its moment.
+  // Fingerprint window ends at max(7 days ago, last_ack timestamp), but is
+  // hard-capped at now-24h. Events younger than 24h must NEVER freeze into
+  // the fingerprint — otherwise an ack made shortly after a same-day burst
+  // would immediately move those events into the historical baseline,
+  // leaving zero events for near-term signals to score (the "Ryan bug":
+  // Layer-3 chip lit but pulse_score = 0).
   const ackTime = lastAck ? ts(lastAck.acknowledged_at) : 0;
-  const fpEnd   = Math.max(now - SEVEN_D, ackTime);
+  const fpEnd   = Math.min(Math.max(now - SEVEN_D, ackTime), now - ONE_D);
 
   const historical = events.filter(e => ts(e.created_at) <= fpEnd);
   const nearTerm   = events.filter(e => ts(e.created_at) >  fpEnd);
@@ -473,9 +481,25 @@ function calculatePulseV3(
   // ── Layer 3: real-time override ──
   // If the last 24h shows immediate concern, the ack dampening is suppressed —
   // staff get the live signal regardless of prior sign-off.
-  const rtFlagged   = realTime.filter(e => e.risk !== "low").length;
-  const rtHighOrCrit = realTime.some(e => e.risk === "critical" || e.risk === "high");
-  const layer3Override = rtFlagged >= 3 || (rtHighOrCrit && rtFlagged >= 2);
+  const rtFlagged         = realTime.filter(e => e.risk !== "low").length;
+  const rtHighOrCritCount = realTime.filter(e => e.risk === "critical" || e.risk === "high").length;
+  const rtHighOrCrit      = rtHighOrCritCount > 0;
+  const layer3Override    = rtFlagged >= 3 || (rtHighOrCrit && rtFlagged >= 2);
+
+  // Tiered Layer-3 floor by severity of the live spike. The signal-weighted
+  // raw score is structurally limited for sustained-high students — Risk
+  // Escalation and Rapid Escalation both measure *trajectory*, so a student
+  // who has been at 100% high-risk all week scores 0 on them. The floor is
+  // what pulls these students into the right band.
+  //   ≥5 flagged AND ≥4 high/critical → 70 (critical — acute crisis)
+  //   ≥3 flagged AND ≥2 high/critical → 60 (still high, slightly elevated)
+  //   else (2+ flagged with ≥1 high, or 3+ all-medium)       → 50 (high band minimum)
+  let layer3Floor = 0;
+  if (layer3Override) {
+    if (rtFlagged >= 5 && rtHighOrCritCount >= 4)      layer3Floor = 70;
+    else if (rtFlagged >= 3 && rtHighOrCritCount >= 2) layer3Floor = 60;
+    else                                                layer3Floor = 50;
+  }
 
   // ── Context boost ──
   let context_boost = 0;
@@ -486,8 +510,12 @@ function calculatePulseV3(
   if (re_emergence)     context_boost += 25;
   if (layer3Override)   context_boost = Math.max(context_boost, 0);
 
-  // Final pulse score
-  const pulseScore = Math.max(0, Math.min(100, rawScore + recencyBoost + context_boost));
+  // Final pulse score. The Layer-3 floor (tiered above) lifts the student
+  // into the right band when the live 24h spike is too acute to suppress —
+  // the in-app "⚡ Acute spike today" chip must never appear on a student
+  // whose number says they're LOW.
+  let pulseScore = Math.max(0, Math.min(100, rawScore + recencyBoost + context_boost));
+  if (layer3Override) pulseScore = Math.max(pulseScore, layer3Floor);
 
   // Trend visualisation uses the full event set (last 14 days regardless of layer)
   const fullBuckets  = bucketByDay(events);
@@ -521,7 +549,6 @@ function calculatePulseV3(
   return {
     student_id:        studentId,
     pulse_score:       pulseScore,
-    raw_score:         rawScore,
     trend,
     trend_direction:   trendDir,
     trend_shape:       trendShape,
@@ -539,6 +566,7 @@ function calculatePulseV3(
     re_emergence,
     last_acknowledged: lastAck,
     context_boost,
+    layer3_active: layer3Override,
   };
 }
 

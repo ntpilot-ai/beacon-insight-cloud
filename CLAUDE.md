@@ -139,15 +139,47 @@ Current shared layout (both pages):
 - All new pages need `"use client"` and `useAuth()` check
 - API routes use `SUPABASE_SERVICE_KEY` for server-side writes
 
-## Test Students in Database
-- `niktu` — escalating violence/self-harm pattern
-- `emma.davies` — academic integrity (AI homework completion)
-- `james.okafor` — bullying/cyberbullying
-- `sophie.chen` — wellbeing/emotional distress
-- `ryan.patel` — normal/control student
-- `chloe.morrison` — radicalisation concern
-- `david.mann` — substance abuse + inappropriate content
-- `tyler.brooks` — sexual content escalation, high block/re-attempt rate
+## Test Data Management
+
+**Status (2026-05-26):** Tenant wiped to clean slate; reseed in progress.
+All test data is fully synthetic/fictional — never real captured student prompts.
+
+### Background
+Test data accumulated fragmentarily during development and drifted from the
+scenarios it was meant to represent (e.g. ryan.patel documented as "control" but
+holding 4 same-day HIGH events). A clean rebuild is underway: each scenario
+student is seeded deterministically with a *declared expected pulse band*, so
+engine changes surface as named test failures rather than silent rescoring.
+
+### Conventions
+- Single test tenant: `school_id = 'beacon-academy'` (only tenant in DB).
+- `risk` column stores only `low | medium | high`. `critical` is engine-derived,
+  never stored on an event. Students that should reach the critical band must
+  EARN it via a recent cluster of `high` events inside the Layer-3 window
+  (last 24h), not via a stored value.
+- All seeded timestamps use relative offsets (`now() - interval 'N ...'`), never
+  absolute dates, so scenarios don't rot as windows roll.
+- `niktu` is the scratch account: manual extension/keyword-blocking testing only.
+  No scenario assertions depend on niktu. Reseeded empty.
+
+### Student groups (decision made 2026-05-26 — full clean-slate rebuild)
+- **Scenario students (reseed to spec):** aisha.rahman, ryan.patel, sophie.chen,
+  emma.davies, chloe.morrison, james.okafor, tyler.brooks, david.mann.
+- **Scratch:** niktu (reseed empty).
+- **Wiped, not reseeded:**
+  - Junk / leaked manual testing: niktuson@outlook.com, STU-001, Student-1042.
+  - Former Sept-1 cohort: ethan.cole, priya.sharma, noah.kingsley, callum.wright,
+    hannah.price, oliver.banks. (Looked like intentional academic-year datasets
+    but were not load-bearing for any current work — Phase C long-arc analysis
+    is retention-gated anyway.)
+  - Middle-case leftovers: marcus.bell, liam.foster, jayden.cross, freya.nelson.
+- The wipe is now tenant-wide (`supabase/sql/wipe_fixtures.sql` deletes by
+  `school_id = 'beacon-academy'` without student-id filtering), so any future
+  stray students get cleared too.
+
+### Rule going forward
+New test data is deliberate and documented here. Manual exploratory testing goes
+through `niktu` only, so curated scenarios stay clean.
 
 ## Pending / Next Steps
 - Onboarding flow for new schools (`/setup` page)
@@ -183,6 +215,21 @@ surfaces, and the rough remedy.
   pastoral lead email, optional Slack channel), and fire from
   `/api/triage/run` immediately after a row is upserted with
   `notify_immediately = true`.
+
+- **Aegis over-tags post-disclosure language as `self harm`.** Counterpart
+  to the grooming under-tagging gap above. After a safeguarding disclosure,
+  students commonly process the aftermath in language like *"I feel
+  ashamed"*, *"it was my fault"*, *"I feel really stupid for trusting
+  him"*, *"I just want things to go back to normal"*. The keyword list
+  matches `fault`, `stupid`, `ashamed`, etc. to the `self harm` category,
+  which is a generous reading — the student is expressing shame and
+  blame, not self-harm intent. Surfaced on aisha.rahman's profile on
+  2026-05-25, where post-disclosure prompts pushed her dominant category
+  to `Self-harm` even though the actual content is grief/processing of a
+  resolved grooming incident. Same root cause as the grooming under-tag:
+  keyword classification can't read clinical context. Remedy is the
+  pending Claude-based Aegis classifier; tightening the keyword list in
+  isolation risks regressing the genuine self-harm cases.
 
 ---
 

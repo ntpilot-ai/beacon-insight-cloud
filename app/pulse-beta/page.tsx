@@ -32,7 +32,7 @@ import {
 } from "@/lib/snooze";
 import { buildWeeklySummary, type WeeklySummary } from "@/lib/weekly_summary";
 import { FEEDBACK_REASONS, type FeedbackReason, type PulseFeedback } from "@/lib/feedback";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
+import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, Legend } from "recharts";
 
 
 const ALERT = {
@@ -737,6 +737,7 @@ function StudentDetail({
   pulse,
   events,
   analyses,
+  snoozes,
   onAcknowledge,
   onRequestLLM,
   feedbackCount = 0,
@@ -744,12 +745,46 @@ function StudentDetail({
   pulse:          StudentPulseV3;
   events:         any[];
   analyses:       SessionAnalysis[];
+  snoozes:        PulseSnooze[];
   onAcknowledge:  (action: AcknowledgeAction, notes: string) => Promise<void>;
   onRequestLLM:   (session: ConversationSession<any>) => Promise<void>;
   feedbackCount?: number;
 }) {
   const alert = ALERT[pulse.alert_level];
   const trend = TREND_DIR[pulse.trend_direction];
+  const [showZeroSignals, setShowZeroSignals] = useState(false);
+  const visibleSignals = useMemo(() => {
+    const filtered = showZeroSignals ? pulse.signals : pulse.signals.filter(s => s.score > 0);
+    return [...filtered].sort((a, b) => b.score - a.score);
+  }, [pulse.signals, showZeroSignals]);
+  const zeroSignalCount = pulse.signals.length - pulse.signals.filter(s => s.score > 0).length;
+  const fingerprintLead = pulse.fingerprint.event_count > 0
+    ? [
+        pulse.fingerprint.pattern === "chronic"   ? "Chronic pattern"
+      : pulse.fingerprint.pattern === "improving" ? "Improving pattern"
+      :                                              "Established pattern",
+        pulse.fingerprint.dominant_categories.length > 0
+          ? `· ${pulse.fingerprint.dominant_categories.join(", ")}`
+          : "",
+        `· baseline ${pulse.fingerprint.baseline_score}`,
+      ].join(" ").trim()
+    : null;
+
+  // Recent snooze activity (active or broken in the last 48h) — surfaced so
+  // staff don't see a student in the queue after snoozing them with no
+  // explanation. Sorted newest first.
+  const studentSnoozes = useMemo(() => {
+    const cutoff = Date.now() - 48 * 60 * 60 * 1000;
+    return snoozes
+      .filter(s => s.student_id === pulse.student_id)
+      .filter(s => {
+        const stillActive = !s.broken_early && (!s.expires_at || new Date(s.expires_at).getTime() > Date.now());
+        if (stillActive) return true;
+        if (!s.broken_at) return false;
+        return new Date(s.broken_at).getTime() >= cutoff;
+      })
+      .sort((a, b) => new Date(b.snoozed_at).getTime() - new Date(a.snoozed_at).getTime());
+  }, [snoozes, pulse.student_id]);
 
   const studentEvents = useMemo(() =>
     events.filter((e: any) => e.student_id === pulse.student_id)
@@ -757,41 +792,68 @@ function StudentDetail({
     [events, pulse.student_id]
   );
 
-  const chartData = useMemo(() =>
-    Array.from({ length: 14 }, (_, i) => {
-      const d = new Date();
-      d.setDate(d.getDate() - (13 - i));
-      const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-      const dayEnd   = dayStart + 86400000;
-      const day = studentEvents.filter((e: any) => {
+  const [chartRange, setChartRange] = useState<"14d" | "12w">("12w");
+
+  // Chart data for both granularities. The "14d" view is a daily bar per
+  // day for short-term inspection; "12w" aggregates by ISO-ish week (Mon
+  // start) so a 12-week / one-term view is legible without crushing 84
+  // daily bars into a strip. Week buckets carry an extra `bucketStart`
+  // timestamp so the ack ReferenceLine can match by week.
+  const chartData = useMemo(() => {
+    if (chartRange === "14d") {
+      return Array.from({ length: 14 }, (_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - (13 - i));
+        const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+        const dayEnd   = dayStart + 86400000;
+        const day = studentEvents.filter((e: any) => {
+          const t = new Date(e.created_at).getTime();
+          return t >= dayStart && t < dayEnd;
+        });
+        return {
+          date:        d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
+          bucketStart: dayStart,
+          bucketEnd:   dayEnd,
+          critical:    day.filter((e: any) => e.risk === "critical").length,
+          high:        day.filter((e: any) => e.risk === "high").length,
+          medium:      day.filter((e: any) => e.risk === "medium").length,
+          low:         day.filter((e: any) => e.risk === "low").length,
+        };
+      });
+    }
+    // 12-week view — Monday-aligned week starts.
+    const today    = new Date();
+    const dow      = today.getDay();                      // 0=Sun..6=Sat
+    const sinceMon = (dow + 6) % 7;                       // days back to Monday
+    const thisMon  = new Date(today.getFullYear(), today.getMonth(), today.getDate() - sinceMon);
+    return Array.from({ length: 12 }, (_, i) => {
+      const weekStart = new Date(thisMon);
+      weekStart.setDate(thisMon.getDate() - (11 - i) * 7);
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekStart.getDate() + 7);
+      const wkEvents = studentEvents.filter((e: any) => {
         const t = new Date(e.created_at).getTime();
-        return t >= dayStart && t < dayEnd;
+        return t >= weekStart.getTime() && t < weekEnd.getTime();
       });
       return {
-        date:     d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
-        critical: day.filter((e: any) => e.risk === "critical").length,
-        high:     day.filter((e: any) => e.risk === "high").length,
-        medium:   day.filter((e: any) => e.risk === "medium").length,
-        low:      day.filter((e: any) => e.risk === "low").length,
+        date:        weekStart.toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
+        bucketStart: weekStart.getTime(),
+        bucketEnd:   weekEnd.getTime(),
+        critical:    wkEvents.filter((e: any) => e.risk === "critical").length,
+        high:        wkEvents.filter((e: any) => e.risk === "high").length,
+        medium:      wkEvents.filter((e: any) => e.risk === "medium").length,
+        low:         wkEvents.filter((e: any) => e.risk === "low").length,
       };
-    }),
-    [studentEvents]
-  );
+    });
+  }, [studentEvents, chartRange]);
 
-  // Vertical reference line at the last acknowledgement date — only renders
-  // if the ack falls within the visible 14-day window.
+  // Ack ReferenceLine — match by whichever bucket contains the ack timestamp.
   const lastAckLabel = useMemo(() => {
     if (!pulse.last_acknowledged) return null;
-    const label = dateShort(pulse.last_acknowledged.acknowledged_at);
-    return chartData.some(d => d.date === label) ? label : null;
+    const ackT = new Date(pulse.last_acknowledged.acknowledged_at).getTime();
+    const bucket = chartData.find(d => ackT >= d.bucketStart && ackT < d.bucketEnd);
+    return bucket?.date ?? null;
   }, [pulse.last_acknowledged, chartData]);
-
-  const hasRisk = useMemo(() => ({
-    critical: studentEvents.some((e: any) => e.risk === "critical"),
-    high:     studentEvents.some((e: any) => e.risk === "high"),
-    medium:   studentEvents.some((e: any) => e.risk === "medium"),
-    low:      studentEvents.some((e: any) => e.risk === "low"),
-  }), [studentEvents]);
 
   // Sessions for the timeline view. Sort prioritises sessions a member of
   // staff should look at first: requires_review > high context_risk > recency.
@@ -832,6 +894,12 @@ function StudentDetail({
             <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${alert.bg} ${alert.text}`}>
               {alert.label}
             </span>
+            {pulse.layer3_active && (
+              <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-red-600 text-white animate-pulse"
+                    title="Acute concern in the last 24h — overrides any prior acknowledgement dampening.">
+                ⚡ Acute spike today
+              </span>
+            )}
             {pulse.rapid_escalation && (
               <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-red-600 text-white animate-pulse">
                 ⚡ Rapid Escalation
@@ -844,26 +912,39 @@ function StudentDetail({
             )}
           </div>
 
-          <div className="flex items-baseline gap-2 shrink-0">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Pulse</span>
-            <span className="text-3xl font-bold leading-none" style={{ color: alert.bar }}>{pulse.pulse_score}</span>
-            <span className={`text-xs font-semibold ${trend.color}`}>
-              {trend.icon} {pulse.trend_direction}
+          <div className="flex flex-col items-end shrink-0">
+            <div className="flex items-baseline gap-2">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Pulse</span>
+              <span className="text-3xl font-bold leading-none" style={{ color: alert.bar }}>{pulse.pulse_score}</span>
+              {/* When Layer 3 fires, the aggregated trend label can read "stable"
+                  even though today shows an acute spike — suppress it to avoid
+                  the contradiction. The "⚡ Acute spike today" chip carries the
+                  current signal instead. */}
+              {!pulse.layer3_active && (
+                <span className={`text-xs font-semibold ${trend.color}`}>
+                  {trend.icon} {pulse.trend_direction}
+                </span>
+              )}
+              {pulse.vs_school_avg !== undefined && pulse.vs_school_avg !== 0 && (
+                <span className="text-xs text-slate-400"
+                      title="Context only — never used to suppress an alert">
+                  {pulse.vs_school_avg > 0 ? "+" : ""}{pulse.vs_school_avg} vs avg
+                </span>
+              )}
+              {pulse.context_boost !== 0 && (
+                <span className="text-[10px] text-slate-400">
+                  ctx {pulse.context_boost > 0 ? "+" : ""}{pulse.context_boost}
+                </span>
+              )}
+            </div>
+            <span className="text-[10px] text-slate-400 mt-0.5"
+                  title="Alert bands: ≥25 medium · ≥50 high · ≥70 urgent">
+              ≥50 high · ≥70 urgent
             </span>
-            {pulse.vs_school_avg !== undefined && pulse.vs_school_avg !== 0 && (
-              <span className={`text-xs ${pulse.vs_school_avg > 0 ? "text-red-400" : "text-emerald-400"}`}>
-                {pulse.vs_school_avg > 0 ? "+" : ""}{pulse.vs_school_avg} vs avg
-              </span>
-            )}
-            {pulse.context_boost !== 0 && (
-              <span className="text-[10px] text-slate-400">
-                ctx {pulse.context_boost > 0 ? "+" : ""}{pulse.context_boost}
-              </span>
-            )}
           </div>
         </div>
 
-        {/* Row 2 — meta strip */}
+        {/* Row 2 — meta strip + PDF action */}
         <div className="flex items-center gap-2 text-xs text-slate-400 flex-wrap mt-1.5">
           <span>{pulse.total_events} events</span>
           <span className="text-slate-300">·</span>
@@ -878,7 +959,25 @@ function StudentDetail({
               </span>
             </>
           )}
+          <button
+            onClick={() => window.open(`/reports/student?student=${encodeURIComponent(pulse.student_id)}`, "_blank")}
+            className="ml-auto text-xs font-semibold text-[#06B6D4] border border-[#06B6D4] px-3 py-1 rounded-xl hover:bg-cyan-50 transition-all"
+          >
+            ⬇ PDF Report
+          </button>
         </div>
+
+        {/* Behavioural fingerprint — lead diagnostic. Promoted from a footnote
+            to a top-line summary because it answers the staff question "what
+            is the longer-term pattern here?" more directly than any single
+            signal score does. */}
+        {fingerprintLead && (
+          <div className="flex items-center gap-x-3 gap-y-1 flex-wrap mt-2 text-xs">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider shrink-0">Pattern</span>
+            <span className="font-semibold text-slate-700">{fingerprintLead}</span>
+            <span className="text-slate-400">· {pulse.fingerprint.event_count} historical event{pulse.fingerprint.event_count !== 1 ? "s" : ""}</span>
+          </div>
+        )}
 
         {/* Row 3 — categories + primary concern on the same line */}
         {(pulse.categories.length > 0 || pulse.dominant_signal) && (
@@ -919,22 +1018,125 @@ function StudentDetail({
         {/* Acknowledgement panel */}
         <AcknowledgementPanel pulse={pulse} onSubmit={onAcknowledge} />
 
+        {/* Snooze history — only renders when there's recent activity. Surfaces
+            broken snoozes so staff don't see a student back in the queue with
+            no explanation. */}
+        {studentSnoozes.length > 0 && (
+          <div className="rounded-2xl border border-slate-100 bg-white">
+            <div className="px-4 py-3 flex items-center gap-2">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider shrink-0">
+                Snooze
+              </span>
+              <span className="text-xs text-slate-500">
+                {studentSnoozes.length} {studentSnoozes.length === 1 ? "entry" : "entries"} in last 48h
+              </span>
+            </div>
+            <div className="px-4 pb-3 space-y-2 border-t border-slate-100 pt-3">
+              {studentSnoozes.map(s => {
+                const expiresAt = s.expires_at ? new Date(s.expires_at).getTime() : null;
+                const expired   = expiresAt !== null && expiresAt <= Date.now();
+                const active    = !s.broken_early && !expired;
+                const statusLabel = active
+                  ? "💤 Active"
+                  : s.broken_early
+                    ? "🔔 Broken"
+                    : "⌛ Expired";
+                const statusClass = active
+                  ? "bg-cyan-50 text-cyan-700"
+                  : s.broken_early
+                    ? "bg-amber-100 text-amber-800"
+                    : "bg-slate-100 text-slate-500";
+                return (
+                  <div key={s.id} className="text-xs">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${statusClass}`}>
+                        {statusLabel}
+                      </span>
+                      <span className="font-semibold text-slate-700">
+                        {dateShort(s.snoozed_at)} {new Date(s.snoozed_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                      <span className="text-slate-400">
+                        {s.duration_label} · by {s.snoozed_by}
+                      </span>
+                      {s.snooze_time_score !== null && (
+                        <span className="text-slate-400">
+                          at score {s.snooze_time_score}
+                        </span>
+                      )}
+                    </div>
+                    {s.broken_early && s.broken_reason && (
+                      <div className="text-amber-700 mt-1 italic">
+                        Broken {s.broken_at && dateShort(s.broken_at) + " " + new Date(s.broken_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}: {s.broken_reason}
+                      </div>
+                    )}
+                    {s.reason && (
+                      <div className="text-slate-500 mt-0.5">Note: {s.reason}</div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Timeline + signals side by side */}
         <div className="grid grid-cols-[1fr_1fr] gap-5">
 
-          {/* 14-day timeline */}
+          {/* Activity timeline — stacked bars per bucket (day or week).
+              Default is the 12-week / term view so staff see the long arc
+              rather than just a fortnight; the 14d toggle is the short-term
+              inspection view. Lines were swapped for stacked bars because
+              the overlapping line series had no legend and hid totals. */}
           <div className="bg-slate-50 rounded-2xl p-4">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-3">
-              14-Day Timeline · {SHAPE_ICON[pulse.trend_shape]} {pulse.trend_shape.replace("_", " ")}
+            <div className="flex items-center justify-between mb-3 gap-2">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                Activity Timeline
+                {chartRange === "14d" && (
+                  <span className="ml-2 text-slate-500 normal-case font-semibold tracking-normal">
+                    · {SHAPE_ICON[pulse.trend_shape]} {pulse.trend_shape.replace("_", " ")}
+                  </span>
+                )}
+              </div>
+              <div className="flex bg-white rounded-lg border border-slate-200 p-0.5">
+                {(["14d", "12w"] as const).map(r => (
+                  <button
+                    key={r}
+                    onClick={() => setChartRange(r)}
+                    className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
+                      chartRange === r
+                        ? "bg-[#06B6D4] text-white"
+                        : "text-slate-500 hover:text-slate-700"
+                    }`}
+                  >
+                    {r === "14d" ? "14 days" : "12 weeks"}
+                  </button>
+                ))}
+              </div>
             </div>
-            <ResponsiveContainer width="100%" height={180}>
-              <LineChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -28 }}>
-                <XAxis dataKey="date" tick={{ fontSize: 9, fill: "#94a3b8" }} tickLine={false} axisLine={false} interval={6} />
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -28 }}>
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 9, fill: "#94a3b8" }}
+                  tickLine={false}
+                  axisLine={false}
+                  interval={chartRange === "14d" ? 2 : 1}
+                />
                 <YAxis allowDecimals={false} tick={{ fontSize: 9, fill: "#94a3b8" }} tickLine={false} axisLine={false} />
                 <Tooltip
                   contentStyle={{ fontSize: 11, borderRadius: 8, border: "1px solid #e2e8f0", padding: "6px 10px" }}
                   labelStyle={{ fontWeight: 700, marginBottom: 4, color: "#334155" }}
                   itemStyle={{ padding: "1px 0" }}
+                  labelFormatter={(label) =>
+                    chartRange === "14d" ? label : `Week of ${label}`
+                  }
+                />
+                <Legend
+                  verticalAlign="bottom"
+                  height={20}
+                  iconSize={8}
+                  iconType="square"
+                  wrapperStyle={{ fontSize: 10, paddingTop: 4 }}
                 />
                 {lastAckLabel && (
                   <ReferenceLine
@@ -944,23 +1146,40 @@ function StudentDetail({
                     label={{ value: "ack", position: "top", fontSize: 9, fill: "#94a3b8" }}
                   />
                 )}
-                {hasRisk.critical && <Line type="monotone" dataKey="critical" stroke="#6366F1" strokeWidth={2} dot={false} name="Critical" />}
-                {hasRisk.high     && <Line type="monotone" dataKey="high"     stroke="#EF4444" strokeWidth={2} dot={false} name="High"     />}
-                {hasRisk.medium   && <Line type="monotone" dataKey="medium"   stroke="#EAB308" strokeWidth={2} dot={false} name="Medium"   />}
-                {hasRisk.low      && <Line type="monotone" dataKey="low"      stroke="#22C55E" strokeWidth={2} dot={false} name="Low"      />}
-              </LineChart>
+                {/* Stack order bottom→top: low, medium, high, critical so the
+                    most-severe risks visually sit on top of the bar. */}
+                <Bar dataKey="low"      stackId="risk" fill="#22C55E" name="Low"      />
+                <Bar dataKey="medium"   stackId="risk" fill="#EAB308" name="Medium"   />
+                <Bar dataKey="high"     stackId="risk" fill="#EF4444" name="High"     />
+                <Bar dataKey="critical" stackId="risk" fill="#6366F1" name="Critical" />
+              </BarChart>
             </ResponsiveContainer>
           </div>
 
-          {/* Signal bars — compact */}
+          {/* Signal bars — compact. Zero-score signals are dilution for staff
+              skimming, so they're hidden by default behind a "View all" toggle.
+              Remaining signals are sorted descending so the actionable ones
+              are at the top. */}
           <div className="bg-slate-50 rounded-2xl p-4">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-3">Signal Breakdown</div>
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Signal Breakdown</div>
+              {zeroSignalCount > 0 && (
+                <button
+                  onClick={() => setShowZeroSignals(v => !v)}
+                  className="text-[10px] font-semibold text-slate-500 hover:text-[#06B6D4]"
+                >
+                  {showZeroSignals
+                    ? `Hide ${zeroSignalCount} inactive`
+                    : `+ ${zeroSignalCount} inactive`}
+                </button>
+              )}
+            </div>
             <div className="space-y-2.5">
-              {pulse.signals.map(sig => {
-                const c = sig.score >= 70 ? "#DC2626" : sig.score >= 40 ? "#F59E0B" : "#10B981";
+              {visibleSignals.map(sig => {
+                const c = sig.score >= 70 ? "#DC2626" : sig.score >= 40 ? "#F59E0B" : sig.score > 0 ? "#10B981" : "#CBD5E1";
                 return (
-                  <div key={sig.id} className="flex items-center gap-2">
-                    <div className="w-28 text-xs text-slate-500 truncate shrink-0">{sig.label}</div>
+                  <div key={sig.id} className="flex items-center gap-2" title={sig.detail}>
+                    <div className="w-36 text-xs text-slate-500 shrink-0">{sig.label}</div>
                     <div className="flex-1 h-1.5 rounded-full bg-slate-200 overflow-hidden">
                       <div className="h-full rounded-full" style={{ width: `${sig.score}%`, background: c }} />
                     </div>
@@ -968,31 +1187,18 @@ function StudentDetail({
                   </div>
                 );
               })}
+              {visibleSignals.length === 0 && (
+                <div className="text-xs text-slate-400 italic py-2">All signals quiet in this window.</div>
+              )}
             </div>
-            {pulse.fingerprint.event_count > 0 && (
-              <div className="mt-3 pt-3 border-t border-slate-200 text-[10px] text-slate-400">
-                Baseline {pulse.fingerprint.baseline_score} · {pulse.fingerprint.pattern}
-                {pulse.fingerprint.dominant_categories.length > 0 && (
-                  <span> · {pulse.fingerprint.dominant_categories.join(", ")}</span>
-                )}
-              </div>
-            )}
           </div>
 
         </div>
 
         {/* Session timeline */}
         <div>
-          <div className="flex items-center justify-between mb-3">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-              Session Timeline · {sessions.length} session{sessions.length !== 1 ? "s" : ""}
-            </div>
-            <button
-              onClick={() => window.open(`/reports/student?student=${encodeURIComponent(pulse.student_id)}`, "_blank")}
-              className="text-xs font-semibold text-[#06B6D4] border border-[#06B6D4] px-3 py-1.5 rounded-xl hover:bg-cyan-50 transition-all"
-            >
-              ⬇ PDF Report
-            </button>
+          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-3">
+            Session Timeline · {sessions.length} session{sessions.length !== 1 ? "s" : ""}
           </div>
           <div className="space-y-3">
             <SessionGroup level="high"   sessions={groupedSessions.high}   analysesById={analysesById} onRequestLLM={onRequestLLM} defaultOpen={true} />
@@ -3326,7 +3532,7 @@ function PulseBetaPageContent() {
           {/* Right detail */}
           <div className="flex-1 bg-white overflow-auto">
             {selected
-              ? <StudentDetail pulse={selected} events={events} analyses={analyses} onAcknowledge={acknowledgeSelected} onRequestLLM={requestLLMForSession} feedbackCount={feedbackCountByStudent.get(selected.student_id) ?? 0} />
+              ? <StudentDetail pulse={selected} events={events} analyses={analyses} snoozes={snoozes} onAcknowledge={acknowledgeSelected} onRequestLLM={requestLLMForSession} feedbackCount={feedbackCountByStudent.get(selected.student_id) ?? 0} />
               : <div className="flex items-center justify-center h-full text-slate-400 text-sm">Select a student</div>
             }
           </div>

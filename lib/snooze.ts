@@ -78,30 +78,34 @@ export function shouldBreakSnooze(pulse: StudentPulseV3, snooze: PulseSnooze): s
   if (pulse.rapid_escalation) {
     return "Rapid escalation in last 3 days";
   }
-  // Only break for "critical" if the alert level has genuinely risen since
-  // the snooze was created. Without this check, a student who was already at
-  // critical when snoozed would have their snooze broken on every triage run.
-  // Legacy rows with no baseline (snooze_time_alert_level = null) fall back to
-  // the old behaviour and break — conservative until they get a new snooze.
+  // Critical-rise override. Stricter than v1: requires BOTH a level rise to
+  // critical AND a meaningful score increase (+20 over the snooze-time
+  // baseline). Reason: v3 signal scoring can fluctuate by 5–15 points
+  // across triage runs depending on which 24h boundaries fall inside the
+  // recency window, so a student snoozed at 52 can briefly read 70 on a
+  // recalculation and read 52 again half an hour later. Without the score
+  // delta requirement, a single touch over the 70 boundary permanently
+  // invalidates the teacher's snooze — observed in the wild for students
+  // mid-safeguarding-process. Legacy rows (both baseline fields null) fall
+  // back to a conservative break since we have nothing to compare against.
   if (pulse.alert_level === "critical") {
-    const baseline = snooze.snooze_time_alert_level;
-    if (baseline !== null) {
-      // We have a reference level — break only if it genuinely rose to critical.
-      const baselineOrder = ALERT_ORDER[baseline] ?? 0;
-      if (baselineOrder < ALERT_ORDER["critical"]) {
-        return `Alert level rose to critical (score ${pulse.pulse_score})`;
-      }
+    const baseline      = snooze.snooze_time_alert_level;
+    const baselineScore = snooze.snooze_time_score;
+
+    if (baseline === null && baselineScore === null) {
+      // Pre-0008 row, no baseline at all. Conservative behaviour.
+      return `Alert level critical (legacy snooze, no baseline reference)`;
     }
-    // Whether or not we have a level baseline, break for a meaningful score
-    // spike (>10 points). If both baseline fields are null (snooze created
-    // before migration 0008), this is the only check that fires — prevents
-    // legacy snoozes from being broken on every run with no recourse.
-    if (
-      snooze.snooze_time_score !== null &&
-      pulse.pulse_score > snooze.snooze_time_score + 10
-    ) {
-      return `Score escalated further since snooze (now ${pulse.pulse_score}, was ${snooze.snooze_time_score})`;
+
+    const baselineOrder  = ALERT_ORDER[baseline ?? "low"] ?? 0;
+    const roseToCritical = baselineOrder < ALERT_ORDER["critical"];
+    const meaningfulRise = baselineScore !== null && pulse.pulse_score > baselineScore + 20;
+
+    if (roseToCritical && meaningfulRise) {
+      return `Score escalated significantly (now ${pulse.pulse_score}, was ${baselineScore} when snoozed)`;
     }
+    // Otherwise: a critical reading that's close to the snooze-time score
+    // is treated as noise, and the snooze holds.
   }
   // context_boost is clamped to >=0 specifically when the real-time layer
   // (layer 3) fires, so a non-negative boost on an otherwise-ack'd student
