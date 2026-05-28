@@ -690,12 +690,19 @@ export function calculateAllPulsesV3(
   const engineNow = engineNowMs ?? Date.now();
 
   // ── Term bounding (decision 3: pure separation) ──
-  // When a current term is supplied, restrict the engine to events inside it.
-  // End boundary is term_end + 1 day (so events on the final term day count);
-  // also clamped to engineNow so we never pull a "future" event from a
-  // clock-skewed write. If no termContext is given, behave as before
-  // (unbounded).
+  // When a current term is supplied, restrict the engine to events AND acks
+  // inside it. End boundary is term_end + 1 day (so events on the final
+  // term day count); also clamped to engineNow so we never pull a "future"
+  // event from a clock-skewed write. If no termContext is given, behave as
+  // before (unbounded).
+  //
+  // Acks must respect the same boundary as events: otherwise a previous-term
+  // ack would drive within-term re_emergence and context_boost in the new
+  // term, bypassing the snapshot-based cross_term_reemergence's safety gates
+  // (4-week window, peak threshold). Cross-term carry-over is the snapshot
+  // mechanism's job — within-term ack state belongs to its own term.
   let scopedEvents = events;
+  let scopedAcks   = acknowledgements;
   let termStartMs: number | undefined;
   if (termContext?.currentTerm) {
     const t = termContext.currentTerm;
@@ -704,6 +711,10 @@ export function calculateAllPulsesV3(
     const upperBoundMs = Math.min(termEndMs, engineNow);
     scopedEvents = events.filter(e => {
       const t0 = ts(e.created_at);
+      return t0 >= termStartMs! && t0 < upperBoundMs;
+    });
+    scopedAcks = acknowledgements.filter(a => {
+      const t0 = ts(a.acknowledged_at);
       return t0 >= termStartMs! && t0 < upperBoundMs;
     });
   }
@@ -732,7 +743,7 @@ export function calculateAllPulsesV3(
     .map(([id, evts]) => calculatePulseV3(
       id,
       evts,
-      acknowledgements,
+      scopedAcks,
       analysesByStudent[id] || [],
       snapshotByStudent[id],
       termStartMs,
