@@ -898,6 +898,7 @@ function StudentDetail({
   onAcknowledge,
   onRequestLLM,
   feedbackCount = 0,
+  currentTerm,
   previousTerm,
   previousTermSnapshot,
 }: {
@@ -913,6 +914,11 @@ function StudentDetail({
   // appear in the prior term.
   previousTerm?:         SchoolTerm | null;
   previousTermSnapshot?: PulseTermSnapshot;
+  // Current term — needed by the Activity Timeline chart for the "This Term"
+  // and "This Year" range options (academic year derived from
+  // currentTerm.academic_year). Falls back to a calendar-relative window
+  // when not supplied.
+  currentTerm?:          SchoolTerm | null;
 }) {
   const alert = ALERT[pulse.alert_level];
   const trend = TREND_DIR[pulse.trend_direction];
@@ -956,65 +962,128 @@ function StudentDetail({
     [events, pulse.student_id]
   );
 
-  const [chartRange, setChartRange] = useState<"14d" | "12w">("12w");
+  const [chartRange, setChartRange] = useState<"week" | "term" | "year">("term");
 
   // Phase 4: previous-term expand/collapse state. Default collapsed —
   // the header row carries the answer for most staff scans; the expanded
   // table is for "let me really look at what happened last term."
   const [showPrevTermDetail, setShowPrevTermDetail] = useState(false);
 
-  // Chart data for both granularities. The "14d" view is a daily bar per
-  // day for short-term inspection; "12w" aggregates by ISO-ish week (Mon
-  // start) so a 12-week / one-term view is legible without crushing 84
-  // daily bars into a strip. Week buckets carry an extra `bucketStart`
-  // timestamp so the ack ReferenceLine can match by week.
+  // Chart data for the three range options:
+  //   week — 7 daily bars, Monday-aligned current calendar week
+  //   term — weekly bars across the current term, clipped at today (no
+  //          empty future-week bars on the right edge). Falls back to a
+  //          rolling 12-week window when currentTerm is unknown.
+  //   year — monthly bars across the current academic year (Sept 1 of
+  //          start year through today), clipped at today. Falls back to a
+  //          rolling 10-month window when currentTerm is unknown.
+  // Bucket entries carry bucketStart / bucketEnd so the ack ReferenceLine
+  // can match by whichever bucket contains the ack timestamp.
   const chartData = useMemo(() => {
-    if (chartRange === "14d") {
-      return Array.from({ length: 14 }, (_, i) => {
-        const d = new Date();
-        d.setDate(d.getDate() - (13 - i));
-        const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    function risksIn(startMs: number, endMs: number) {
+      const bucket = studentEvents.filter((e: any) => {
+        const t = new Date(e.created_at).getTime();
+        return t >= startMs && t < endMs;
+      });
+      return {
+        critical: bucket.filter((e: any) => e.risk === "critical").length,
+        high:     bucket.filter((e: any) => e.risk === "high").length,
+        medium:   bucket.filter((e: any) => e.risk === "medium").length,
+        low:      bucket.filter((e: any) => e.risk === "low").length,
+      };
+    }
+
+    if (chartRange === "week") {
+      // 7 daily bars, Monday → Sunday of the current week. We render every
+      // day even if it's in the future; future days simply show zero bars.
+      const today    = new Date();
+      const dow      = today.getDay();
+      const sinceMon = (dow + 6) % 7;
+      const monday   = new Date(today.getFullYear(), today.getMonth(), today.getDate() - sinceMon);
+      return Array.from({ length: 7 }, (_, i) => {
+        const d = new Date(monday);
+        d.setDate(monday.getDate() + i);
+        const dayStart = d.getTime();
         const dayEnd   = dayStart + 86400000;
-        const day = studentEvents.filter((e: any) => {
-          const t = new Date(e.created_at).getTime();
-          return t >= dayStart && t < dayEnd;
-        });
         return {
-          date:        d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
+          date:        d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric" }),
           bucketStart: dayStart,
           bucketEnd:   dayEnd,
-          critical:    day.filter((e: any) => e.risk === "critical").length,
-          high:        day.filter((e: any) => e.risk === "high").length,
-          medium:      day.filter((e: any) => e.risk === "medium").length,
-          low:         day.filter((e: any) => e.risk === "low").length,
+          ...risksIn(dayStart, dayEnd),
         };
       });
     }
-    // 12-week view — Monday-aligned week starts.
-    const today    = new Date();
-    const dow      = today.getDay();                      // 0=Sun..6=Sat
-    const sinceMon = (dow + 6) % 7;                       // days back to Monday
-    const thisMon  = new Date(today.getFullYear(), today.getMonth(), today.getDate() - sinceMon);
-    return Array.from({ length: 12 }, (_, i) => {
-      const weekStart = new Date(thisMon);
-      weekStart.setDate(thisMon.getDate() - (11 - i) * 7);
-      const weekEnd = new Date(weekStart);
-      weekEnd.setDate(weekStart.getDate() + 7);
-      const wkEvents = studentEvents.filter((e: any) => {
-        const t = new Date(e.created_at).getTime();
-        return t >= weekStart.getTime() && t < weekEnd.getTime();
+
+    if (chartRange === "term") {
+      // Weekly bars across the term. Bars exist only for weeks that have
+      // already started — we clip at "today" so the right edge of the chart
+      // reads as "now," not as a wall of empty future bars.
+      const todayMs = Date.now();
+      let termStartMs: number;
+      let termEndMs:   number;
+      if (currentTerm) {
+        termStartMs = new Date(currentTerm.start_date + "T00:00:00").getTime();
+        termEndMs   = new Date(currentTerm.end_date   + "T00:00:00").getTime() + 86400000;
+      } else {
+        // Fallback: rolling 12-week window ending today, Monday-aligned.
+        const t        = new Date();
+        const sinceMon = (t.getDay() + 6) % 7;
+        termEndMs      = new Date(t.getFullYear(), t.getMonth(), t.getDate() - sinceMon + 7).getTime();
+        termStartMs    = termEndMs - 12 * 7 * 86400000;
+      }
+      // Snap term start back to its containing Monday so week buckets stay
+      // calendar-aligned (a term that starts mid-week shouldn't render a
+      // half-width opening bar).
+      const startDate = new Date(termStartMs);
+      const sinceMon  = (startDate.getDay() + 6) % 7;
+      const firstMon  = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() - sinceMon);
+
+      const bars: any[] = [];
+      for (let weekStart = firstMon.getTime(); weekStart < Math.min(termEndMs, todayMs); weekStart += 7 * 86400000) {
+        const weekEnd = weekStart + 7 * 86400000;
+        const d = new Date(weekStart);
+        bars.push({
+          date:        d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
+          bucketStart: weekStart,
+          bucketEnd:   weekEnd,
+          ...risksIn(weekStart, weekEnd),
+        });
+      }
+      return bars;
+    }
+
+    // year — monthly bars across the academic year.
+    const todayMs = Date.now();
+    let yearStartMs: number;
+    let yearEndMs:   number;
+    if (currentTerm) {
+      // academic_year shape: "2025-26" → starts Sept 1 2025, ends Aug 31 2026.
+      // UK convention; matches school_terms seed.
+      const startYear = parseInt(currentTerm.academic_year.slice(0, 4), 10);
+      yearStartMs = new Date(startYear, 8, 1).getTime();        // Sept 1
+      yearEndMs   = new Date(startYear + 1, 7, 31).getTime() + 86400000; // Aug 31 inclusive
+    } else {
+      // Fallback: rolling 10-month window ending this month.
+      const t      = new Date();
+      yearEndMs    = new Date(t.getFullYear(), t.getMonth() + 1, 1).getTime();
+      yearStartMs  = new Date(t.getFullYear(), t.getMonth() - 9, 1).getTime();
+    }
+
+    const bars: any[] = [];
+    const cursor = new Date(yearStartMs);
+    while (cursor.getTime() < Math.min(yearEndMs, todayMs + 86400000)) {
+      const monthStart = new Date(cursor.getFullYear(), cursor.getMonth(), 1).getTime();
+      const monthEnd   = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1).getTime();
+      bars.push({
+        date:        new Date(monthStart).toLocaleDateString("en-GB", { month: "short" }),
+        bucketStart: monthStart,
+        bucketEnd:   monthEnd,
+        ...risksIn(monthStart, monthEnd),
       });
-      return {
-        date:        weekStart.toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
-        bucketStart: weekStart.getTime(),
-        bucketEnd:   weekEnd.getTime(),
-        critical:    wkEvents.filter((e: any) => e.risk === "critical").length,
-        high:        wkEvents.filter((e: any) => e.risk === "high").length,
-        medium:      wkEvents.filter((e: any) => e.risk === "medium").length,
-        low:         wkEvents.filter((e: any) => e.risk === "low").length,
-      };
-    });
-  }, [studentEvents, chartRange]);
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+    return bars;
+  }, [studentEvents, chartRange, currentTerm]);
 
   // Ack ReferenceLine — match by whichever bucket contains the ack timestamp.
   const lastAckLabel = useMemo(() => {
@@ -1273,14 +1342,14 @@ function StudentDetail({
             <div className="flex items-center justify-between mb-3 gap-2">
               <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                 Activity Timeline
-                {chartRange === "14d" && (
+                {chartRange === "week" && (
                   <span className="ml-2 text-slate-500 normal-case font-semibold tracking-normal">
                     · {SHAPE_ICON[pulse.trend_shape]} {pulse.trend_shape.replace("_", " ")}
                   </span>
                 )}
               </div>
               <div className="flex bg-white rounded-lg border border-slate-200 p-0.5">
-                {(["14d", "12w"] as const).map(r => (
+                {(["week", "term", "year"] as const).map(r => (
                   <button
                     key={r}
                     onClick={() => setChartRange(r)}
@@ -1290,7 +1359,7 @@ function StudentDetail({
                         : "text-slate-500 hover:text-slate-700"
                     }`}
                   >
-                    {r === "14d" ? "14 days" : "12 weeks"}
+                    {r === "week" ? "This Week" : r === "term" ? "This Term" : "This Year"}
                   </button>
                 ))}
               </div>
@@ -1302,7 +1371,7 @@ function StudentDetail({
                   tick={{ fontSize: 9, fill: "#94a3b8" }}
                   tickLine={false}
                   axisLine={false}
-                  interval={chartRange === "14d" ? 2 : 1}
+                  interval={chartRange === "term" ? 1 : 0}
                 />
                 <YAxis allowDecimals={false} tick={{ fontSize: 9, fill: "#94a3b8" }} tickLine={false} axisLine={false} />
                 <Tooltip
@@ -1310,7 +1379,9 @@ function StudentDetail({
                   labelStyle={{ fontWeight: 700, marginBottom: 4, color: "#334155" }}
                   itemStyle={{ padding: "1px 0" }}
                   labelFormatter={(label) =>
-                    chartRange === "14d" ? label : `Week of ${label}`
+                    chartRange === "week" ? label
+                    : chartRange === "term" ? `Week of ${label}`
+                    : label
                   }
                 />
                 <Legend
@@ -3727,6 +3798,7 @@ function PulseBetaPageContent() {
                   onAcknowledge={acknowledgeSelected}
                   onRequestLLM={requestLLMForSession}
                   feedbackCount={feedbackCountByStudent.get(selected.student_id) ?? 0}
+                  currentTerm={termContext?.currentTerm ?? null}
                   previousTerm={termContext?.previousTerm ?? null}
                   previousTermSnapshot={termContext?.previousTermSnapshots?.find(s => s.student_id === selected.student_id)}
                 />
