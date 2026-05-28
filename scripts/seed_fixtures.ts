@@ -167,6 +167,99 @@ const SCENARIO_EVENTS: Record<string, SeedEvent[]> = {
   // niktu — empty scratch account, no events.
 };
 
+// ── Past-term fixtures (Phase 4.5) ──────────────────────────────────────────
+//
+// Spring 2026 cohort. Unlike the current-term fixtures above (which use
+// relative-to-now offsets so they don't rot as time moves on), past-term
+// events are anchored to ABSOLUTE dates inside Spring 2026 (Jan 5 – Mar 27).
+// A finished academic term is immutable history — the dates never change, so
+// the rot-protection argument doesn't apply.
+//
+// Purpose: give Phase 4 UI work real previous-term snapshot data to render
+// against, and stress-test the snapshot generation pipeline end-to-end.
+
+interface AbsEvent {
+  iso:      string;        // absolute ISO timestamp
+  risk:     "low" | "medium" | "high";
+  blocked?: boolean;
+  matched?: string[];
+  prompt:   string;
+  platform?: string;
+}
+
+// AISHA Spring — Inappropriate Content cluster, ack'd twice. Snapshot
+// expected to land at high band with dominant=Inappropriate Content,
+// ack_count=2. This is the cross-term carry-over student.
+const aishaSpringEvents: AbsEvent[] = [
+  { iso: "2026-02-05T10:14:00Z", risk: "high",   matched: ["explicit"], prompt: "spring-marker-aisha-feb-001" },
+  { iso: "2026-02-06T11:30:00Z", risk: "high",   matched: ["explicit"], prompt: "spring-marker-aisha-feb-002" },
+  { iso: "2026-02-08T14:05:00Z", risk: "medium", matched: ["explicit"], prompt: "spring-marker-aisha-feb-003" },
+  { iso: "2026-02-12T09:48:00Z", risk: "high",   matched: ["explicit"], prompt: "spring-marker-aisha-feb-004" },
+  { iso: "2026-03-10T13:22:00Z", risk: "high",   matched: ["explicit"], prompt: "spring-marker-aisha-mar-001" },
+  { iso: "2026-03-11T10:51:00Z", risk: "high",   matched: ["explicit"], prompt: "spring-marker-aisha-mar-002" },
+  { iso: "2026-03-14T15:09:00Z", risk: "medium", matched: ["explicit"], prompt: "spring-marker-aisha-mar-003" },
+  { iso: "2026-03-22T11:45:00Z", risk: "high",   matched: ["explicit"], prompt: "spring-marker-aisha-mar-004" },
+];
+
+// SOPHIE Spring — milder pattern, no acks. Snapshot expected at medium
+// band with dominant=Self-harm, ack_count=0.
+const sophieSpringEvents: AbsEvent[] = [
+  { iso: "2026-02-20T10:00:00Z", risk: "medium", matched: ["harm"], prompt: "spring-marker-sophie-feb-001" },
+  { iso: "2026-03-05T11:30:00Z", risk: "medium", matched: ["harm"], prompt: "spring-marker-sophie-mar-001" },
+  { iso: "2026-03-12T14:15:00Z", risk: "medium", matched: ["harm"], prompt: "spring-marker-sophie-mar-002" },
+  { iso: "2026-03-20T09:20:00Z", risk: "low",    matched: [],       prompt: "spring-marker-sophie-mar-003" },
+];
+
+// RYAN Spring — control student. All low-risk academic prompts. Snapshot
+// expected at low band, ack_count=0.
+const ryanSpringEvents: AbsEvent[] = [
+  { iso: "2026-01-15T09:00:00Z", risk: "low", matched: [], prompt: "spring-marker-ryan-control-01" },
+  { iso: "2026-02-01T10:30:00Z", risk: "low", matched: [], prompt: "spring-marker-ryan-control-02" },
+  { iso: "2026-02-20T13:45:00Z", risk: "low", matched: [], prompt: "spring-marker-ryan-control-03" },
+  { iso: "2026-03-05T11:15:00Z", risk: "low", matched: [], prompt: "spring-marker-ryan-control-04" },
+  { iso: "2026-03-18T14:30:00Z", risk: "low", matched: [], prompt: "spring-marker-ryan-control-05" },
+];
+
+const SPRING_EVENTS: Record<string, AbsEvent[]> = {
+  "aisha.rahman":  aishaSpringEvents,
+  "sophie.chen":   sophieSpringEvents,
+  "ryan.patel":    ryanSpringEvents,
+};
+
+// AISHA Spring acks — two responses to the cluster pattern. action_taken
+// values matter: "referred" and "monitored" both count toward ack_count
+// but only "referred"/"escalated" increment referral_count.
+interface AbsAck {
+  acknowledged_at:    string;
+  alert_level:        "critical" | "high" | "medium" | "low";
+  dominant_category:  string;
+  action_taken:       "monitored" | "referred" | "escalated" | "no_action";
+  notes:              string;
+  acknowledged_by:    string;
+}
+const aishaSpringAcks: AbsAck[] = [
+  {
+    acknowledged_at:   "2026-02-13T15:00:00Z",
+    alert_level:       "high",
+    dominant_category: "Inappropriate Content",
+    action_taken:      "referred",
+    notes:             "Spring fixture: HoY informed, parental contact made",
+    acknowledged_by:   "fixture-seed",
+  },
+  {
+    acknowledged_at:   "2026-03-15T15:00:00Z",
+    alert_level:       "high",
+    dominant_category: "Inappropriate Content",
+    action_taken:      "monitored",
+    notes:             "Spring fixture: pattern returned post half-term, monitoring",
+    acknowledged_by:   "fixture-seed",
+  },
+];
+
+const SPRING_ACKS: Record<string, AbsAck[]> = {
+  "aisha.rahman": aishaSpringAcks,
+};
+
 // Aisha's 4 broken-snooze fixtures (defend the snooze-history detail panel
 // display state). Each was a 24h snooze taken at score=52/high, broken
 // shortly after by the OLD critical-rise rule. After the FIX2 +20-threshold
@@ -257,6 +350,39 @@ async function main() {
     }));
     const { error } = await sb.from("beacon_events").insert(rows);
     console.log(`${error ? "✗" : "✓"} ${studentId.padEnd(20)} ${rows.length} events ${error ? "ERR " + error.message : ""}`);
+  }
+
+  // ── SEED SPRING 2026 (past-term) ──
+  console.log("\n--- Seed Spring 2026 events (past-term, absolute dates) ---");
+  for (const [studentId, events] of Object.entries(SPRING_EVENTS)) {
+    const rows = events.map(e => ({
+      school_id:  SCHOOL_ID,
+      student_id: studentId,
+      platform:   e.platform || "chatgpt.com",
+      prompt:     e.prompt,
+      risk:       e.risk,
+      blocked:    e.blocked ?? false,
+      matched:    e.matched ?? [],
+      created_at: e.iso,
+    }));
+    const { error } = await sb.from("beacon_events").insert(rows);
+    console.log(`${error ? "✗" : "✓"} ${studentId.padEnd(20)} ${rows.length} Spring events ${error ? "ERR " + error.message : ""}`);
+  }
+
+  console.log("\n--- Seed Spring 2026 acks ---");
+  for (const [studentId, acks] of Object.entries(SPRING_ACKS)) {
+    const rows = acks.map(a => ({
+      school_id:         SCHOOL_ID,
+      student_id:        studentId,
+      acknowledged_by:   a.acknowledged_by,
+      acknowledged_at:   a.acknowledged_at,
+      alert_level:       a.alert_level,
+      dominant_category: a.dominant_category,
+      action_taken:      a.action_taken,
+      notes:             a.notes,
+    }));
+    const { error } = await sb.from("pulse_acknowledgements").insert(rows);
+    console.log(`${error ? "✗" : "✓"} ${studentId.padEnd(20)} ${rows.length} Spring acks ${error ? "ERR " + error.message : ""}`);
   }
 
   // ── SEED AISHA'S BROKEN SNOOZES ──

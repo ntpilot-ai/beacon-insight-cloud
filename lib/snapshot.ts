@@ -77,6 +77,46 @@ function computeOpeningAlertLevel(termEvents: BeaconEvent[], term: SchoolTerm): 
 }
 
 /**
+ * Peak alert level = highest band reached in any rolling 7-day window across
+ * the term. Captures "this student had a concerning period" even if the
+ * engine's term-end snapshot looks calm. Cross-term re_emergence and the
+ * Phase 4 carry-over filter both gate on this.
+ *
+ * Implementation: step by day across the term, scoring the trailing 7 days
+ * at each step, take the max band. Cheap (term length × O(events)) and
+ * matches the engine's near-term window concept.
+ */
+function computePeakAlertLevel(termEvents: BeaconEvent[], term: SchoolTerm): AlertLevel {
+  if (!termEvents.length) return "low";
+
+  const termStartMs = ts(term.start_date + "T00:00:00Z");
+  const termEndMs   = ts(term.end_date   + "T00:00:00Z") + DAY_MS;
+
+  // Pre-sort once so window slicing stays cheap.
+  const sorted = [...termEvents].sort((a, b) => ts(a.created_at) - ts(b.created_at));
+  const tsArray = sorted.map(e => ts(e.created_at));
+
+  const bandOrder: Record<AlertLevel, number> = { low: 0, normal: 0, medium: 1, high: 2, critical: 3 };
+  let peakBand: AlertLevel = "low";
+
+  // Step day-by-day from term_start through term_end. At each day boundary
+  // d, score the events in the trailing 7 days [d-7d, d). Stops as soon as
+  // peak hits 'critical' — can't get higher.
+  for (let d = termStartMs + DAY_MS; d <= termEndMs; d += DAY_MS) {
+    const windowStart = d - OPENING_WINDOW_DAYS * DAY_MS;
+    const inWindow: BeaconEvent[] = [];
+    for (let i = 0; i < tsArray.length; i++) {
+      if (tsArray[i] >= windowStart && tsArray[i] < d) inWindow.push(sorted[i]);
+    }
+    if (!inWindow.length) continue;
+    const band = bandFromScore(scoreEvents(inWindow));
+    if (bandOrder[band] > bandOrder[peakBand]) peakBand = band;
+    if (peakBand === "critical") break;
+  }
+  return peakBand;
+}
+
+/**
  * Count of days in the term where Layer-3 conditions would have fired.
  * Approximation: per-calendar-day bucket, no rolling 24h window. Matches
  * the engine's L3 condition shape (≥3 flagged OR ≥2 flagged with ≥1 high).
@@ -99,20 +139,29 @@ function countLayer3Days(termEvents: BeaconEvent[]): number {
 
 /**
  * Trajectory classifier. Returns one of:
- *   improving  — final band lower than opening
- *   worsening  — final band higher than opening
- *   stable     — same band
- *   volatile   — significant Layer-3 activity regardless of delta
+ *   volatile             — significant Layer-3 activity regardless of delta
+ *   resolved_after_peak  — peaked at high+ but closed below peak (the
+ *                          "Aisha pattern": tough term that calmed by end)
+ *   improving            — final band lower than opening
+ *   worsening            — final band higher than opening
+ *   stable               — same band, no peak
  *
  * Phase C of the detail-panel plan introduces a richer trajectory vocabulary
  * (sustained_improvement / cyclical / etc.); when that lands the snapshot
  * schema's open `trajectory text` column can absorb it without migration.
  */
-function classifyTrajectory(opening: AlertLevel, final: AlertLevel, layer3Days: number): string {
+function classifyTrajectory(
+  opening:    AlertLevel,
+  final:      AlertLevel,
+  peak:       AlertLevel,
+  layer3Days: number,
+): string {
   if (layer3Days >= VOLATILE_LAYER3_DAYS) return "volatile";
   const order: Record<AlertLevel, number> = { low: 0, normal: 0, medium: 1, high: 2, critical: 3 };
   const o = order[opening];
   const f = order[final];
+  const p = order[peak];
+  if (p >= order.high && p > f) return "resolved_after_peak";
   if (f < o) return "improving";
   if (f > o) return "worsening";
   return "stable";
@@ -157,6 +206,7 @@ export function computeTermSnapshot(
 ): PulseTermSnapshot {
   const opening = computeOpeningAlertLevel(termEvents, term);
   const final   = finalPulse.alert_level as AlertLevel;
+  const peak    = computePeakAlertLevel(termEvents, term);
   const l3Days  = countLayer3Days(termEvents);
 
   // dominant_categories: prefer the engine's fingerprint categories (already
@@ -181,7 +231,8 @@ export function computeTermSnapshot(
     final_score:         finalPulse.pulse_score,
     final_alert_level:   final,
     opening_alert_level: opening,
-    trajectory:          classifyTrajectory(opening, final, l3Days),
+    peak_alert_level:    peak,
+    trajectory:          classifyTrajectory(opening, final, peak, l3Days),
 
     dominant_categories: dominant,
     pattern:             finalPulse.fingerprint.pattern,

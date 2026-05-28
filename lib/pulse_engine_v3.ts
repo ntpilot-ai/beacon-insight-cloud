@@ -102,6 +102,11 @@ export interface PulseTermSnapshot {
   final_score:          number;
   final_alert_level:    "critical" | "high" | "medium" | "low" | "normal";
   opening_alert_level:  "critical" | "high" | "medium" | "low" | "normal";
+  // Highest alert level reached during the term (weekly-window scan). Used by
+  // cross-term re_emergence and the Phase 4 carry-over filter — captures
+  // "this student had a concerning period in the term" even when they
+  // calmed down by term-end. See 0012_pulse_term_snapshots_peak.sql.
+  peak_alert_level:     "critical" | "high" | "medium" | "low" | "normal";
   trajectory:           string;
   dominant_categories:  string[];
   pattern:              "chronic" | "improving" | "normal";
@@ -559,11 +564,15 @@ function calculatePulseV3(
     (now - termStartMs) < CROSS_TERM_REEMERGENCE_WEEKS * 7 * DAY_MS
   );
   const allCategoriesThisTerm = clusterCategories(events);
+  // Gates on peak_alert_level (not final): a student who peaked at high
+  // mid-term but calmed by term-end should still trigger carry-over, since
+  // the resolved pattern can return. final_alert_level is the closing
+  // state, which is too lossy for this decision.
   const cross_term_reemergence = !!(
     previousTermSnapshot &&
     inCrossTermWindow &&
-    (previousTermSnapshot.final_alert_level === "high" ||
-     previousTermSnapshot.final_alert_level === "critical") &&
+    (previousTermSnapshot.peak_alert_level === "high" ||
+     previousTermSnapshot.peak_alert_level === "critical") &&
     previousTermSnapshot.ack_count > 0 &&
     previousTermSnapshot.dominant_categories.some(cat =>
       allCategoriesThisTerm.some(c => c.name === cat && c.count >= 2),
