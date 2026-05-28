@@ -15,6 +15,8 @@ import {
   type PulseAcknowledgement,
   type AcknowledgeAction,
   type TermContext,
+  type PulseTermSnapshot,
+  type SchoolTerm,
 } from "@/lib/pulse_engine_v3";
 import { fetchTermContext } from "@/lib/terms";
 import {
@@ -734,6 +736,159 @@ function SessionGroup({
   );
 }
 
+// ── Previous-term row (Phase 4) ───────────────────────────────────────────────
+// Compact one-liner that mirrors the Pattern fingerprint row visually.
+// Surfaces the prior term's snapshot data so staff can answer
+// "did this student have a tough previous term?" without leaving the panel.
+// Click expands inline into the full snapshot detail.
+
+function PreviousTermRow({
+  snapshot,
+  term,
+  expanded,
+  onToggle,
+}: {
+  snapshot: PulseTermSnapshot;
+  term:     SchoolTerm;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const peakChip   = ALERT[snapshot.peak_alert_level === "normal" ? "low" : snapshot.peak_alert_level] ?? ALERT.low;
+  const finalChip  = ALERT[snapshot.final_alert_level === "normal" ? "low" : snapshot.final_alert_level] ?? ALERT.low;
+  const referrals  = snapshot.referral_count;
+  const acks       = snapshot.ack_count;
+  const cats       = snapshot.dominant_categories.slice(0, 2).join(", "); // header gets top 2; expand shows all
+  const trajLabel  = trajectoryLabel(snapshot.trajectory);
+
+  return (
+    <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50/70">
+      {/* Compact header — click anywhere to toggle */}
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-center gap-x-3 gap-y-1 flex-wrap px-3 py-2 text-xs text-left hover:bg-slate-100/70 transition-colors rounded-xl"
+        aria-expanded={expanded}
+      >
+        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider shrink-0">Previous term</span>
+        <span className="font-semibold text-slate-700">{term.name}</span>
+        <span className="text-slate-300">·</span>
+        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${peakChip.bg} ${peakChip.text}`}>
+          peaked {peakChip.label.toLowerCase()}
+        </span>
+        {cats && (
+          <>
+            <span className="text-slate-300">·</span>
+            <span className="text-slate-600">{cats}</span>
+          </>
+        )}
+        {acks > 0 && (
+          <>
+            <span className="text-slate-300">·</span>
+            <span className="text-slate-500">
+              {acks} ack{acks !== 1 ? "s" : ""}
+              {referrals > 0 ? ` (${referrals} referral${referrals !== 1 ? "s" : ""})` : ""}
+            </span>
+          </>
+        )}
+        {trajLabel && (
+          <>
+            <span className="text-slate-300">·</span>
+            <span className="text-slate-500">{trajLabel}</span>
+          </>
+        )}
+        <span className="ml-auto text-slate-400 text-[10px]">{expanded ? "▴ hide" : "▾ details"}</span>
+      </button>
+
+      {/* Expanded: full snapshot record. Layout favours scannability over
+          density — each row is "label: value", grouped by purpose. */}
+      {expanded && (
+        <div className="px-3 pb-3 border-t border-slate-200 pt-3 grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
+          <DetailLine label="Term window">
+            {dateShort(term.start_date)} – {dateShort(term.end_date)}
+          </DetailLine>
+          <DetailLine label="Pattern">{snapshot.pattern}</DetailLine>
+
+          <DetailLine label="Opening alert">
+            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${(ALERT[snapshot.opening_alert_level === "normal" ? "low" : snapshot.opening_alert_level] ?? ALERT.low).bg} ${(ALERT[snapshot.opening_alert_level === "normal" ? "low" : snapshot.opening_alert_level] ?? ALERT.low).text}`}>
+              {(ALERT[snapshot.opening_alert_level === "normal" ? "low" : snapshot.opening_alert_level] ?? ALERT.low).label}
+            </span>
+          </DetailLine>
+          <DetailLine label="Peak alert">
+            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${peakChip.bg} ${peakChip.text}`}>
+              {peakChip.label}
+            </span>
+          </DetailLine>
+
+          <DetailLine label="Final alert">
+            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${finalChip.bg} ${finalChip.text}`}>
+              {finalChip.label}
+            </span>
+            <span className="ml-2 text-slate-400">(score {snapshot.final_score})</span>
+          </DetailLine>
+          <DetailLine label="Trajectory">{trajLabel ?? snapshot.trajectory}</DetailLine>
+
+          <DetailLine label="Acknowledgements">
+            {acks} total{referrals > 0 ? ` · ${referrals} referred/escalated` : ""}
+          </DetailLine>
+          <DetailLine label="Layer-3 days">{snapshot.layer3_event_days}</DetailLine>
+
+          <DetailLine label="Total events">{snapshot.total_events} ({snapshot.flagged_events} flagged)</DetailLine>
+          <DetailLine label="Dominant categories">
+            {snapshot.dominant_categories.length > 0
+              ? snapshot.dominant_categories.join(", ")
+              : <span className="text-slate-400">none</span>}
+          </DetailLine>
+
+          {/* Key incidents span both columns — the prompt text is wide */}
+          {snapshot.key_incidents.length > 0 && (
+            <div className="col-span-2 mt-2">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Key incidents</div>
+              <div className="space-y-1.5">
+                {snapshot.key_incidents.map((inc, i) => (
+                  <div key={i} className="flex items-start gap-2 text-xs">
+                    <span className="text-slate-400 shrink-0 w-24">{dateShort(inc.timestamp)}</span>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${ALERT[inc.risk_level === "critical" ? "critical" : inc.risk_level === "high" ? "high" : inc.risk_level === "medium" ? "medium" : "low"].bg} ${ALERT[inc.risk_level === "critical" ? "critical" : inc.risk_level === "high" ? "high" : inc.risk_level === "medium" ? "medium" : "low"].text}`}>
+                      {inc.risk_level}
+                    </span>
+                    <span className="text-slate-600 shrink-0">{inc.category}</span>
+                    <span className="text-slate-500 truncate min-w-0" title={inc.summary}>— {inc.summary}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="col-span-2 mt-1 text-[10px] text-slate-400">
+            Locked {dateShort(snapshot.locked_at)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DetailLine({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider w-32 shrink-0">{label}</span>
+      <span className="text-slate-700">{children}</span>
+    </div>
+  );
+}
+
+function trajectoryLabel(t: string): string | null {
+  // Human-friendly phrasing for the snapshot trajectory enum. Returns null
+  // for vocabulary we haven't styled yet so the raw value falls through.
+  switch (t) {
+    case "improving":            return "improving";
+    case "worsening":            return "worsening";
+    case "stable":               return "stable";
+    case "volatile":             return "volatile";
+    case "resolved_after_peak":  return "resolved after peak";
+    default:                     return null;
+  }
+}
+
 // ── Student detail ────────────────────────────────────────────────────────────
 function StudentDetail({
   pulse,
@@ -743,6 +898,8 @@ function StudentDetail({
   onAcknowledge,
   onRequestLLM,
   feedbackCount = 0,
+  previousTerm,
+  previousTermSnapshot,
 }: {
   pulse:          StudentPulseV3;
   events:         any[];
@@ -751,6 +908,11 @@ function StudentDetail({
   onAcknowledge:  (action: AcknowledgeAction, notes: string) => Promise<void>;
   onRequestLLM:   (session: ConversationSession<any>) => Promise<void>;
   feedbackCount?: number;
+  // Phase 4: previous-term context. Both fields are undefined when there
+  // is no prior term (first term of year) or when this student didn't
+  // appear in the prior term.
+  previousTerm?:         SchoolTerm | null;
+  previousTermSnapshot?: PulseTermSnapshot;
 }) {
   const alert = ALERT[pulse.alert_level];
   const trend = TREND_DIR[pulse.trend_direction];
@@ -795,6 +957,11 @@ function StudentDetail({
   );
 
   const [chartRange, setChartRange] = useState<"14d" | "12w">("12w");
+
+  // Phase 4: previous-term expand/collapse state. Default collapsed —
+  // the header row carries the answer for most staff scans; the expanded
+  // table is for "let me really look at what happened last term."
+  const [showPrevTermDetail, setShowPrevTermDetail] = useState(false);
 
   // Chart data for both granularities. The "14d" view is a daily bar per
   // day for short-term inspection; "12w" aggregates by ISO-ish week (Mon
@@ -979,6 +1146,19 @@ function StudentDetail({
             <span className="font-semibold text-slate-700">{fingerprintLead}</span>
             <span className="text-slate-400">· {pulse.fingerprint.event_count} historical event{pulse.fingerprint.event_count !== 1 ? "s" : ""}</span>
           </div>
+        )}
+
+        {/* Phase 4: Previous-term row. Mirrors the Pattern row visually but
+            describes the immediately prior term from pulse_term_snapshots.
+            Compact one-liner; click to expand into the full snapshot detail.
+            Renders nothing when there's no prior snapshot for this student. */}
+        {previousTermSnapshot && previousTerm && (
+          <PreviousTermRow
+            snapshot={previousTermSnapshot}
+            term={previousTerm}
+            expanded={showPrevTermDetail}
+            onToggle={() => setShowPrevTermDetail(v => !v)}
+          />
         )}
 
         {/* Row 3 — categories + primary concern on the same line */}
@@ -3539,7 +3719,17 @@ function PulseBetaPageContent() {
           {/* Right detail */}
           <div className="flex-1 bg-white overflow-auto">
             {selected
-              ? <StudentDetail pulse={selected} events={events} analyses={analyses} snoozes={snoozes} onAcknowledge={acknowledgeSelected} onRequestLLM={requestLLMForSession} feedbackCount={feedbackCountByStudent.get(selected.student_id) ?? 0} />
+              ? <StudentDetail
+                  pulse={selected}
+                  events={events}
+                  analyses={analyses}
+                  snoozes={snoozes}
+                  onAcknowledge={acknowledgeSelected}
+                  onRequestLLM={requestLLMForSession}
+                  feedbackCount={feedbackCountByStudent.get(selected.student_id) ?? 0}
+                  previousTerm={termContext?.previousTerm ?? null}
+                  previousTermSnapshot={termContext?.previousTermSnapshots?.find(s => s.student_id === selected.student_id)}
+                />
               : <div className="flex items-center justify-center h-full text-slate-400 text-sm">Select a student</div>
             }
           </div>

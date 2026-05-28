@@ -43,39 +43,47 @@ export async function fetchCurrentTerm(
 }
 
 /**
- * Fetch the snapshot row for each student from the term immediately preceding
- * `currentTerm`. Used to drive cross-term re_emergence.
- *
- * Returns [] (not null) when no prior term exists — first term of the year,
- * or a fresh school. The engine treats missing snapshots as "no carry-over".
+ * Find the term immediately preceding `currentTerm` (highest end_date
+ * strictly before currentTerm.start_date). Returns null when none exists
+ * (first term of the year, or a fresh school).
  */
-export async function fetchPreviousTermSnapshots(
+export async function fetchPreviousTerm(
   supabase: SupabaseClient,
   schoolId: string,
   currentTerm: SchoolTerm,
-): Promise<PulseTermSnapshot[]> {
-  // Previous term = highest end_date strictly before this term's start_date.
-  const { data: priorTerm, error: termErr } = await supabase
+): Promise<SchoolTerm | null> {
+  const { data, error } = await supabase
     .from("school_terms")
-    .select("term_id")
+    .select("*")
     .eq("school_id", schoolId)
     .lt("end_date", currentTerm.start_date)
     .order("end_date", { ascending: false })
     .limit(1)
     .maybeSingle();
-
-  if (termErr) {
-    console.warn("[terms] previous-term lookup failed:", termErr.message);
-    return [];
+  if (error) {
+    console.warn("[terms] previous-term lookup failed:", error.message);
+    return null;
   }
-  if (!priorTerm) return [];
+  return (data as SchoolTerm | null) ?? null;
+}
 
+/**
+ * Fetch the snapshot row for each student from `previousTerm`. Used to
+ * drive cross-term re_emergence and the Phase 4 carry-over UI.
+ *
+ * Returns [] (not null) when no rows exist for that term. The engine treats
+ * missing snapshots as "no carry-over".
+ */
+export async function fetchPreviousTermSnapshots(
+  supabase: SupabaseClient,
+  schoolId: string,
+  previousTerm: SchoolTerm,
+): Promise<PulseTermSnapshot[]> {
   const { data, error } = await supabase
     .from("pulse_term_snapshots")
     .select("*")
     .eq("school_id", schoolId)
-    .eq("term_id", (priorTerm as { term_id: string }).term_id);
-
+    .eq("term_id", previousTerm.term_id);
   if (error) {
     console.warn("[terms] snapshot fetch failed:", error.message);
     return [];
@@ -86,7 +94,8 @@ export async function fetchPreviousTermSnapshots(
 /**
  * Convenience: build a TermContext in one shot. Returns null when no current
  * term exists for the school — caller passes undefined to the engine and gets
- * the legacy unbounded behaviour.
+ * the legacy unbounded behaviour. previousTerm and previousTermSnapshots are
+ * populated whenever a prior term exists in school_terms.
  */
 export async function fetchTermContext(
   supabase: SupabaseClient,
@@ -95,8 +104,11 @@ export async function fetchTermContext(
 ): Promise<TermContext | null> {
   const currentTerm = await fetchCurrentTerm(supabase, schoolId, on);
   if (!currentTerm) return null;
-  const previousTermSnapshots = await fetchPreviousTermSnapshots(
-    supabase, schoolId, currentTerm,
-  );
-  return { currentTerm, previousTermSnapshots };
+
+  const previousTerm = await fetchPreviousTerm(supabase, schoolId, currentTerm);
+  const previousTermSnapshots = previousTerm
+    ? await fetchPreviousTermSnapshots(supabase, schoolId, previousTerm)
+    : [];
+
+  return { currentTerm, previousTerm, previousTermSnapshots };
 }

@@ -120,6 +120,9 @@ export interface PulseTermSnapshot {
 
 export interface TermContext {
   currentTerm:            SchoolTerm;
+  // The immediately prior term, if any. Surfaced to the UI for labelling
+  // ("Previous term: Spring 2026") — engine itself doesn't read it.
+  previousTerm?:          SchoolTerm | null;
   // One previous-term snapshot per student (typically the immediately prior
   // term). Engine matches by student_id; missing entries are fine — a student
   // with no prior snapshot simply gets no cross-term re_emergence boost.
