@@ -185,7 +185,9 @@ function bucketByDay(events: BeaconEvent[]): Record<string, DayBucket> {
   return buckets;
 }
 
-function clusterCategories(events: BeaconEvent[]): { name: string; count: number }[] {
+// Exported for snapshot computation (Phase 3) so the per-event category logic
+// stays single-sourced. Internal callers in this file use it unchanged.
+export function clusterCategories(events: BeaconEvent[]): { name: string; count: number }[] {
   const counts: Record<string, number> = {};
   events.filter(e => e.risk !== "low").forEach(e => {
     const m = (e.matched || []).join(" ").toLowerCase();
@@ -204,9 +206,10 @@ function clusterCategories(events: BeaconEvent[]): { name: string; count: number
     .filter(c => c.name !== "General" || Object.keys(counts).length === 1);
 }
 
-function buildTrend(buckets: Record<string, DayBucket>): number[] {
+function buildTrend(buckets: Record<string, DayBucket>, nowMs?: number): number[] {
+  const anchor = nowMs ?? Date.now();
   return Array.from({ length: 14 }, (_, i) => {
-    const d = new Date();
+    const d = new Date(anchor);
     d.setDate(d.getDate() - (13 - i));
     return buckets[dayStr(d)]?.score ?? 0;
   });
@@ -253,8 +256,8 @@ function signalEscalation(buckets: Record<string, DayBucket>): PulseSignal {
   };
 }
 
-function signalRapidEscalation(buckets: Record<string, DayBucket>): PulseSignal {
-  const trend     = buildTrend(buckets);
+function signalRapidEscalation(buckets: Record<string, DayBucket>, nowMs?: number): PulseSignal {
+  const trend     = buildTrend(buckets, nowMs);
   const recent3   = trend.slice(-3);
   const prior     = trend.slice(0, -3).filter(v => v > 0);
   const recentAvg = recent3.reduce((s, v) => s + v, 0) / 3;
@@ -412,10 +415,10 @@ function signalConversationalContext(sessions: ConversationSession<BeaconEvent>[
   };
 }
 
-function runSignals(events: BeaconEvent[], buckets: Record<string, DayBucket>): PulseSignal[] {
+function runSignals(events: BeaconEvent[], buckets: Record<string, DayBucket>, nowMs?: number): PulseSignal[] {
   return [
     signalEscalation(buckets),
-    signalRapidEscalation(buckets),
+    signalRapidEscalation(buckets, nowMs),
     signalVelocity(buckets),
     signalRepeatTopics(events),
     signalBlockedRate(events),
@@ -474,8 +477,12 @@ function calculatePulseV3(
   analyses:  SessionAnalysis[],
   previousTermSnapshot?: PulseTermSnapshot,
   termStartMs?: number,
+  engineNowMs?: number,
 ): StudentPulseV3 {
-  const now      = Date.now();
+  // Engine "now". Defaults to Date.now() so live callers are unaffected.
+  // Snapshot generation passes term_end + 1d to compute the as-of-term-end
+  // score, which is what gets locked into pulse_term_snapshots.
+  const now = engineNowMs ?? Date.now();
 
   // Active (non-expired) acknowledgements for this student, newest first
   const studentAcks = acks
@@ -502,7 +509,7 @@ function calculatePulseV3(
 
   // ── Layer 2: near-term signals (this is the live alert) ──
   const ntBuckets = bucketByDay(nearTerm);
-  const ntSignals = runSignals(nearTerm, ntBuckets);
+  const ntSignals = runSignals(nearTerm, ntBuckets, now);
 
   // Step 2/3: conversational context. Sessions are derived once across all of
   // this student's events (so a session that started before the fingerprint
@@ -606,7 +613,7 @@ function calculatePulseV3(
 
   // Trend visualisation uses the full event set (last 14 days regardless of layer)
   const fullBuckets  = bucketByDay(events);
-  const trend        = buildTrend(fullBuckets);
+  const trend        = buildTrend(fullBuckets, now);
   const recentHalf   = trend.slice(7);
   const earlierHalf  = trend.slice(0, 7);
   const recentAvg    = recentHalf.reduce((s, v) => s + v, 0) / 7;
@@ -664,19 +671,25 @@ export function calculateAllPulsesV3(
   acknowledgements: PulseAcknowledgement[] = [],
   sessionAnalyses:  SessionAnalysis[] = [],
   termContext?:     TermContext,
+  engineNowMs?:     number,
 ): StudentPulseV3[] {
+  // Engine "now" for the whole calc. Defaults to Date.now() for live callers;
+  // snapshot generation passes term_end + 1d to lock the as-of-term-end view.
+  const engineNow = engineNowMs ?? Date.now();
+
   // ── Term bounding (decision 3: pure separation) ──
   // When a current term is supplied, restrict the engine to events inside it.
   // End boundary is term_end + 1 day (so events on the final term day count);
-  // also clamped to now so we never pull a "future" event from a clock-skewed
-  // write. If no termContext is given, behave as before (unbounded).
+  // also clamped to engineNow so we never pull a "future" event from a
+  // clock-skewed write. If no termContext is given, behave as before
+  // (unbounded).
   let scopedEvents = events;
   let termStartMs: number | undefined;
   if (termContext?.currentTerm) {
     const t = termContext.currentTerm;
     termStartMs        = new Date(t.start_date + "T00:00:00Z").getTime();
     const termEndMs    = new Date(t.end_date   + "T00:00:00Z").getTime() + DAY_MS;
-    const upperBoundMs = Math.min(termEndMs, Date.now());
+    const upperBoundMs = Math.min(termEndMs, engineNow);
     scopedEvents = events.filter(e => {
       const t0 = ts(e.created_at);
       return t0 >= termStartMs! && t0 < upperBoundMs;
@@ -711,6 +724,7 @@ export function calculateAllPulsesV3(
       analysesByStudent[id] || [],
       snapshotByStudent[id],
       termStartMs,
+      engineNow,
     ))
     .sort((a, b) => b.pulse_score - a.pulse_score);
 
