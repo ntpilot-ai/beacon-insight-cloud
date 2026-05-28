@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { calculateAllPulsesV3, type BeaconEvent, type PulseAcknowledgement, type StudentPulseV3 } from "@/lib/pulse_engine_v3";
+import { fetchTermContext } from "@/lib/terms";
 import { groupSessions, mergeAnalyses, type SessionAnalysis } from "@/lib/sessions";
 import { buildTriagePrompt, parseTriageVerdict, isActiveStudent, TRIAGE_SYSTEM_PROMPT, type TriageResult } from "@/lib/triage";
 import { activeSnoozeFor, shouldBreakSnooze, type PulseSnooze } from "@/lib/snooze";
@@ -57,16 +58,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: "no_events", processed: 0, triaged: [] });
   }
 
-  const [acks, analyses, existingToday, snoozes, suppressions] = await Promise.all([
+  const [acks, analyses, existingToday, snoozes, suppressions, termContext] = await Promise.all([
     fetchAcks(supabase, school_id),
     fetchAnalyses(supabase, school_id, cutoff),
     fetchTodaysTriage(supabase, school_id, todayUtc),
     fetchSnoozes(supabase, school_id),
     fetchSuppressions(supabase, school_id, now),
+    fetchTermContext(supabase, school_id),
   ]);
 
   // ── Score everyone with the v3 engine, then filter ──
-  const rawPulses = calculateAllPulsesV3(events, acks, analyses);
+  const rawPulses = calculateAllPulsesV3(events, acks, analyses, termContext ?? undefined);
   // Apply active signal suppressions (triage-only: suppressions affect the
   // prompt and threshold decisions but never write back to the live Pulse page).
   const pulses = rawPulses.map(p => applySuppressions(p, suppressions, now));

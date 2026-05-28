@@ -14,6 +14,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { calculateAllPulsesV3, type StudentPulseV3 } from "../lib/pulse_engine_v3";
+import { fetchTermContext } from "../lib/terms";
 import { fetchAllEvents } from "../lib/fetchEvents";
 
 const SCHOOL_ID = "beacon-academy";
@@ -106,7 +107,9 @@ async function main() {
     .select("*")
     .eq("school_id", SCHOOL_ID);
 
-  const pulses = calculateAllPulsesV3(events as any, (acks as any) || [], (analyses as any) || []);
+  const termContext = await fetchTermContext(sb, SCHOOL_ID);
+
+  const pulses = calculateAllPulsesV3(events as any, (acks as any) || [], (analyses as any) || [], termContext ?? undefined);
   const byStudent = new Map<string, StudentPulseV3>(pulses.map(p => [p.student_id, p]));
 
   console.log("=== Pulse fixture verification ===\n");

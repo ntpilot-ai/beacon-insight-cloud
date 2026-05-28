@@ -14,7 +14,9 @@ import {
   type StudentPulseV3,
   type PulseAcknowledgement,
   type AcknowledgeAction,
+  type TermContext,
 } from "@/lib/pulse_engine_v3";
+import { fetchTermContext } from "@/lib/terms";
 import {
   groupSessions,
   mergeAnalyses,
@@ -2958,6 +2960,7 @@ function PulseBetaPageContent() {
   const [acksVersion, setAcksVersion] = useState(0);
   const [analyses, setAnalyses] = useState<SessionAnalysis[]>([]);
   const [analysesVersion, setAnalysesVersion] = useState(0);
+  const [termContext, setTermContext] = useState<TermContext | null>(null);
   const [loading, setLoading]   = useState(true);
   const [selected, setSelected] = useState<StudentPulseV3 | null>(null);
   const [search, setSearch]     = useState("");
@@ -2991,6 +2994,10 @@ function PulseBetaPageContent() {
   useEffect(() => {
     fetchAcknowledgements(SCHOOL_ID).then(setAcks);
   }, [acksVersion]);
+
+  useEffect(() => {
+    fetchTermContext(supabase, SCHOOL_ID).then(setTermContext);
+  }, []);
 
   useEffect(() => {
     fetchSessionAnalyses(SCHOOL_ID).then(setAnalyses);
@@ -3105,8 +3112,8 @@ function PulseBetaPageContent() {
   }, [events, analyses]);
 
   const pulses = useMemo(
-    () => calculateAllPulsesV3(events, acks, analyses),
-    [events, acks, analyses],
+    () => calculateAllPulsesV3(events, acks, analyses, termContext ?? undefined),
+    [events, acks, analyses, termContext],
   );
 
   // Keep selection synced when pulses recompute (so re-emergence shows live after ack)

@@ -70,6 +70,60 @@ export interface BehaviouralFingerprint {
   window_end:          string;
 }
 
+// ── Term-bounded pulse (Phase 2) ──────────────────────────────────────────────
+// Engine remains pure: callers fetch from Supabase, pass in. If no termContext
+// is supplied, the engine behaves exactly as before (unbounded window).
+
+export interface SchoolTerm {
+  id?:           string;
+  school_id:     string;
+  term_id:       string;
+  academic_year: string;
+  name:          string;
+  start_date:    string;   // 'YYYY-MM-DD'
+  end_date:      string;   // 'YYYY-MM-DD'
+}
+
+export interface PulseTermSnapshotIncident {
+  timestamp:  string;
+  summary:    string;
+  category:   string;
+  risk_level: string;
+}
+
+export interface PulseTermSnapshot {
+  id?:                  string;
+  school_id:            string;
+  student_id:           string;
+  term_id:              string;
+  term_start:           string;
+  term_end:             string;
+  locked_at:            string;
+  final_score:          number;
+  final_alert_level:    "critical" | "high" | "medium" | "low" | "normal";
+  opening_alert_level:  "critical" | "high" | "medium" | "low" | "normal";
+  trajectory:           string;
+  dominant_categories:  string[];
+  pattern:              "chronic" | "improving" | "normal";
+  ack_count:            number;
+  referral_count:       number;
+  layer3_event_days:    number;
+  key_incidents:        PulseTermSnapshotIncident[];
+  total_events:         number;
+  flagged_events:       number;
+}
+
+export interface TermContext {
+  currentTerm:            SchoolTerm;
+  // One previous-term snapshot per student (typically the immediately prior
+  // term). Engine matches by student_id; missing entries are fine — a student
+  // with no prior snapshot simply gets no cross-term re_emergence boost.
+  previousTermSnapshots?: PulseTermSnapshot[];
+}
+
+// Cross-term re_emergence expires this many weeks into the new term (decision 4).
+const CROSS_TERM_REEMERGENCE_WEEKS = 4;
+
 export interface StudentPulseV3 {
   student_id:        string;
   pulse_score:       number;
@@ -418,6 +472,8 @@ function calculatePulseV3(
   events:    BeaconEvent[],
   acks:      PulseAcknowledgement[],
   analyses:  SessionAnalysis[],
+  previousTermSnapshot?: PulseTermSnapshot,
+  termStartMs?: number,
 ): StudentPulseV3 {
   const now      = Date.now();
 
@@ -472,11 +528,42 @@ function calculatePulseV3(
 
   // Re-emergence: an acknowledged category resurfaces in near-term
   const ntCategories = clusterCategories(nearTerm);
-  const re_emergence = !!(
+  const within_term_reemergence = !!(
     lastAck &&
     lastAck.dominant_category &&
     ntCategories.some(c => c.name === lastAck.dominant_category && c.count >= 2)
   );
+
+  // Cross-term re_emergence (decision 4): the previous term's snapshot acts
+  // as an implicit ack-source. Same trigger shape as within-term — uniform
+  // logic, just sourced from the snapshot rather than a live ack row.
+  //
+  // Active only when ALL of:
+  //   - a previous-term snapshot exists for this student
+  //   - it ended high or critical
+  //   - staff engaged during that term (ack_count > 0)
+  //   - we are within 4 weeks of the new term's start
+  //   - ≥2 current-term events fall in any of the snapshot's dominant categories
+  //
+  // After 4 weeks, the previous term stops carrying forward — the new term's
+  // own activity is the live signal.
+  const inCrossTermWindow = !!(
+    termStartMs !== undefined &&
+    (now - termStartMs) < CROSS_TERM_REEMERGENCE_WEEKS * 7 * DAY_MS
+  );
+  const allCategoriesThisTerm = clusterCategories(events);
+  const cross_term_reemergence = !!(
+    previousTermSnapshot &&
+    inCrossTermWindow &&
+    (previousTermSnapshot.final_alert_level === "high" ||
+     previousTermSnapshot.final_alert_level === "critical") &&
+    previousTermSnapshot.ack_count > 0 &&
+    previousTermSnapshot.dominant_categories.some(cat =>
+      allCategoriesThisTerm.some(c => c.name === cat && c.count >= 2),
+    )
+  );
+
+  const re_emergence = within_term_reemergence || cross_term_reemergence;
 
   // ── Layer 3: real-time override ──
   // If the last 24h shows immediate concern, the ack dampening is suppressed —
@@ -576,9 +663,34 @@ export function calculateAllPulsesV3(
   events: BeaconEvent[],
   acknowledgements: PulseAcknowledgement[] = [],
   sessionAnalyses:  SessionAnalysis[] = [],
+  termContext?:     TermContext,
 ): StudentPulseV3[] {
+  // ── Term bounding (decision 3: pure separation) ──
+  // When a current term is supplied, restrict the engine to events inside it.
+  // End boundary is term_end + 1 day (so events on the final term day count);
+  // also clamped to now so we never pull a "future" event from a clock-skewed
+  // write. If no termContext is given, behave as before (unbounded).
+  let scopedEvents = events;
+  let termStartMs: number | undefined;
+  if (termContext?.currentTerm) {
+    const t = termContext.currentTerm;
+    termStartMs        = new Date(t.start_date + "T00:00:00Z").getTime();
+    const termEndMs    = new Date(t.end_date   + "T00:00:00Z").getTime() + DAY_MS;
+    const upperBoundMs = Math.min(termEndMs, Date.now());
+    scopedEvents = events.filter(e => {
+      const t0 = ts(e.created_at);
+      return t0 >= termStartMs! && t0 < upperBoundMs;
+    });
+  }
+
+  // Pre-bucket previous-term snapshots by student.
+  const snapshotByStudent: Record<string, PulseTermSnapshot> = {};
+  (termContext?.previousTermSnapshots ?? []).forEach(s => {
+    snapshotByStudent[s.student_id] = s;
+  });
+
   const byStudent: Record<string, BeaconEvent[]> = {};
-  events.forEach(e => {
+  scopedEvents.forEach(e => {
     if (!byStudent[e.student_id]) byStudent[e.student_id] = [];
     byStudent[e.student_id].push(e);
   });
@@ -592,7 +704,14 @@ export function calculateAllPulsesV3(
   });
 
   const pulses = Object.entries(byStudent)
-    .map(([id, evts]) => calculatePulseV3(id, evts, acknowledgements, analysesByStudent[id] || []))
+    .map(([id, evts]) => calculatePulseV3(
+      id,
+      evts,
+      acknowledgements,
+      analysesByStudent[id] || [],
+      snapshotByStudent[id],
+      termStartMs,
+    ))
     .sort((a, b) => b.pulse_score - a.pulse_score);
 
   const avg = pulses.length

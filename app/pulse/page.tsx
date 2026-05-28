@@ -14,7 +14,9 @@ import {
   type StudentPulseV3,
   type PulseAcknowledgement,
   type AcknowledgeAction,
+  type TermContext,
 } from "@/lib/pulse_engine_v3";
+import { fetchTermContext } from "@/lib/terms";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 
@@ -541,6 +543,7 @@ function PulsePageContent() {
   const [events, setEvents]     = useState<any[]>([]);
   const [acks, setAcks]         = useState<PulseAcknowledgement[]>([]);
   const [acksVersion, setAcksVersion] = useState(0);
+  const [termContext, setTermContext] = useState<TermContext | null>(null);
   const [loading, setLoading]   = useState(true);
   const [selected, setSelected] = useState<StudentPulseV3 | null>(null);
   const [search, setSearch]     = useState("");
@@ -555,7 +558,18 @@ function PulsePageContent() {
     fetchAcknowledgements(SCHOOL_ID).then(setAcks);
   }, [acksVersion]);
 
-  const pulses = useMemo(() => calculateAllPulsesV3(events, acks), [events, acks]);
+  useEffect(() => {
+    fetchTermContext(supabase, SCHOOL_ID).then(setTermContext);
+  }, []);
+
+  // termContext stays undefined-equivalent (null) until the fetch resolves —
+  // engine falls back to unbounded behaviour in that window, then re-bounds
+  // once the term lands. No flicker risk: the first render with events also
+  // has the term by the time events finish loading.
+  const pulses = useMemo(
+    () => calculateAllPulsesV3(events, acks, [], termContext ?? undefined),
+    [events, acks, termContext],
+  );
 
   // Keep selection synced when pulses recompute (so re-emergence shows live after ack)
   useEffect(() => {
