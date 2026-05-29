@@ -24,6 +24,99 @@ interface Props {
   // historical term so "last 7 days" means the last 7 days of that term, not of
   // wall-clock today. Defaults to today.
   anchor?: Date;
+  // Explicit date range. When provided, drives chart entirely: daily/weekly/monthly
+  // buckets are picked automatically by span, and the internal mode toggle is hidden.
+  range?: { start: Date; end: Date };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function startOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function startOfWeek(d: Date) {
+  // Monday-anchored week
+  const x = startOfDay(d);
+  const day = x.getDay();
+  const diff = (day + 6) % 7;
+  x.setDate(x.getDate() - diff);
+  return x;
+}
+
+function startOfMonth(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+
+function addDays(d: Date, n: number) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
+}
+
+function addMonths(d: Date, n: number) {
+  return new Date(d.getFullYear(), d.getMonth() + n, 1);
+}
+
+function pickBucket(start: Date, end: Date): "daily" | "weekly" | "monthly" {
+  const days = Math.ceil((end.getTime() - start.getTime()) / DAY_MS);
+  if (days <= 14)  return "daily";
+  if (days <= 120) return "weekly";
+  return "monthly";
+}
+
+function getRangeBuckets(events: BeaconEvent[], start: Date, end: Date, bucket: "daily" | "weekly" | "monthly") {
+  const spans: Array<{ s: Date; e: Date; label: string }> = [];
+
+  if (bucket === "daily") {
+    let cur = startOfDay(start);
+    while (cur <= end) {
+      const next = addDays(cur, 1);
+      spans.push({
+        s: cur,
+        e: next,
+        label: cur.toLocaleDateString("en-GB", { weekday: "short", day: "numeric" }),
+      });
+      cur = next;
+    }
+  } else if (bucket === "weekly") {
+    let cur = startOfWeek(start);
+    while (cur <= end) {
+      const next = addDays(cur, 7);
+      spans.push({
+        s: cur,
+        e: next,
+        label: cur.toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
+      });
+      cur = next;
+    }
+  } else {
+    let cur = startOfMonth(start);
+    while (cur <= end) {
+      const next = addMonths(cur, 1);
+      spans.push({
+        s: cur,
+        e: next,
+        label: cur.toLocaleDateString("en-GB", { month: "short", year: "2-digit" }),
+      });
+      cur = next;
+    }
+  }
+
+  return spans.map(({ s, e, label }) => {
+    const bucketEvents = events.filter(ev => {
+      const d = new Date(ev.created_at);
+      return d >= s && d < e;
+    });
+    return {
+      label,
+      Prompts: bucketEvents.length,
+      Alerts:  bucketEvents.filter(ev => ev.risk !== "low").length,
+      Blocked: bucketEvents.filter(ev => ev.blocked).length,
+    };
+  });
 }
 
 function getBuckets(events: BeaconEvent[], mode: "daily" | "weekly", now: Date) {
@@ -84,7 +177,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
-export default function TrendLine({ events, anchor }: Props) {
+export default function TrendLine({ events, anchor, range }: Props) {
   const [mode, setMode] = useState<"daily" | "weekly">("daily");
 
   const anchorTime = anchor?.getTime();
@@ -94,10 +187,31 @@ export default function TrendLine({ events, anchor }: Props) {
   );
   const isAnchored = anchorTime !== undefined;
 
-  const data = useMemo(() => getBuckets(events, mode, now), [events, mode, now]);
+  const rangeBucket = useMemo(
+    () => (range ? pickBucket(range.start, range.end) : null),
+    [range],
+  );
+
+  const data = useMemo(
+    () =>
+      range && rangeBucket
+        ? getRangeBuckets(events, range.start, range.end, rangeBucket)
+        : getBuckets(events, mode, now),
+    [events, mode, now, range, rangeBucket],
+  );
 
   const totalInPeriod = data.reduce((s, d) => s + d.Prompts, 0);
   const prev = useMemo(() => {
+    if (range) {
+      // Compare to the prior equivalent span
+      const span = range.end.getTime() - range.start.getTime();
+      const prevEnd = new Date(range.start.getTime());
+      const prevStart = new Date(range.start.getTime() - span);
+      return events.filter(e => {
+        const d = new Date(e.created_at);
+        return d >= prevStart && d < prevEnd;
+      }).length;
+    }
     // Compare to the prior equivalent period for the trend indicator
     const periodDays = mode === "daily" ? 7 : 56;
     const cutoff = new Date(now);
@@ -108,16 +222,18 @@ export default function TrendLine({ events, anchor }: Props) {
       const d = new Date(e.created_at);
       return d >= prior && d < cutoff;
     }).length;
-  }, [events, mode, now]);
+  }, [events, mode, now, range]);
 
   const pctChange = prev === 0 ? null : Math.round(((totalInPeriod - prev) / prev) * 100);
 
   const fmt = (d: Date) => d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
   const windowStart = new Date(now);
   windowStart.setDate(windowStart.getDate() - (mode === "daily" ? 6 : 55));
-  const windowLabel = isAnchored
-    ? `${fmt(windowStart)} – ${fmt(now)}`
-    : (mode === "daily" ? "Last 7 days" : "Last 8 weeks");
+  const windowLabel = range
+    ? `${fmt(range.start)} – ${fmt(range.end)}`
+    : isAnchored
+      ? `${fmt(windowStart)} – ${fmt(now)}`
+      : (mode === "daily" ? "Last 7 days" : "Last 8 weeks");
 
   return (
     <section className="bg-white rounded-3xl p-6 shadow-sm">
@@ -136,22 +252,24 @@ export default function TrendLine({ events, anchor }: Props) {
           </p>
         </div>
 
-        <div className="flex gap-1 bg-slate-100 rounded-full p-1">
-          {(["daily", "weekly"] as const).map(m => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={`
-                px-4 py-1.5 rounded-full text-sm font-semibold transition-all
-                ${mode === m
-                  ? "bg-[#06B6D4] text-white shadow-sm"
-                  : "text-slate-500 hover:text-slate-700"}
-              `}
-            >
-              {m === "daily" ? "7 Days" : "8 Weeks"}
-            </button>
-          ))}
-        </div>
+        {!range && (
+          <div className="flex gap-1 bg-slate-100 rounded-full p-1">
+            {(["daily", "weekly"] as const).map(m => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={`
+                  px-4 py-1.5 rounded-full text-sm font-semibold transition-all
+                  ${mode === m
+                    ? "bg-[#06B6D4] text-white shadow-sm"
+                    : "text-slate-500 hover:text-slate-700"}
+                `}
+              >
+                {m === "daily" ? "7 Days" : "8 Weeks"}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <ResponsiveContainer width="100%" height={220}>
