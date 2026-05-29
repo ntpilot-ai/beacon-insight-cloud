@@ -24,6 +24,7 @@ import {
   STATUS_STYLE as STUDENT_STATUS_STYLE,
   type StudentStatus as StudentStatusValue,
 } from "@/lib/student_status";
+import { evaluatePulseEligibility } from "@/lib/promotion";
 import {
   groupSessions,
   mergeAnalyses,
@@ -3746,6 +3747,87 @@ function StudentListItem({
   );
 }
 
+// ── Carry-over list item (Phase 4.5 (5)) ─────────────────────────────────────
+// Renders a student who has a concerning previous-term snapshot but no
+// current-term pulse activity yet. Visually distinguished from the normal
+// tier-grouped rows by an amber surround so staff can tell at a glance that
+// this student is a watch-list affordance rather than a live concern.
+
+function CarryOverListItem({
+  snapshot,
+  isActive,
+  onClick,
+}: {
+  snapshot: PulseTermSnapshot;
+  isActive: boolean;
+  onClick:  () => void;
+}) {
+  const peak = snapshot.peak_alert_level;
+  const peakColor =
+    peak === "critical" ? "#4F46E5" :
+    peak === "high"     ? "#DC2626" :
+                          "#F59E0B";
+  return (
+    <button onClick={onClick}
+      className={`w-full text-left px-4 py-2.5 border-b border-slate-50 transition-colors flex items-center gap-2 ${
+        isActive ? "bg-amber-50/80 border-l-2 border-l-amber-500" : "hover:bg-amber-50/40"
+      }`}>
+      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: peakColor }} />
+      <div className="flex items-center gap-1 min-w-0 flex-1">
+        <span className="text-xs text-amber-600 shrink-0" title="Carry-over from previous term">↩</span>
+        <span className="font-medium text-slate-700 text-sm truncate">{snapshot.student_id}</span>
+      </div>
+      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 shrink-0"
+            title={`Previous term peaked ${peak} with ${snapshot.ack_count} ack${snapshot.ack_count !== 1 ? "s" : ""}`}>
+        Watch
+      </span>
+    </button>
+  );
+}
+
+// Synthesise a placeholder StudentPulseV3 for a carry-over student so the
+// detail panel can render even though they have no current-term activity.
+// The Returning Pattern row will fire (snapshot present) and surface the
+// previous-term context; the rest of the panel renders its empty states
+// honestly ("no events in window", "no sessions found"). When the student
+// generates real activity this term, they'll appear in the normal pulses
+// list and this synthesis is no longer hit.
+function synthCarryOverPulse(snapshot: PulseTermSnapshot): StudentPulseV3 {
+  return {
+    student_id:       snapshot.student_id,
+    pulse_score:      0,
+    trend:            Array(14).fill(0),
+    trend_direction:  "stable",
+    trend_shape:      "normal",
+    trend_delta:      0,
+    rapid_escalation: false,
+    dominant_signal:  {
+      id:     "carry_over_only",
+      label:  "No current-term activity",
+      score:  0,
+      weight: 0,
+      detail: "Surfaced via the carry-over filter — see Returning Pattern row for previous-term context.",
+    },
+    signals:          [],
+    categories:       [],
+    total_events:     0,
+    first_seen:       "",
+    last_seen:        "",
+    alert_level:      "low",
+    fingerprint: {
+      baseline_score:      0,
+      dominant_categories: [],
+      pattern:             "normal",
+      event_count:         0,
+      window_start:        "",
+      window_end:          "",
+    },
+    re_emergence:     false,
+    context_boost:    0,
+    layer3_active:    false,
+  };
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 function PulseBetaPageContent() {
   const { loading: authLoading, authenticated } = useAuth();
@@ -3790,6 +3872,20 @@ function PulseBetaPageContent() {
   useEffect(() => {
     fetchAcknowledgements(SCHOOL_ID).then(setAcks);
   }, [acksVersion]);
+
+  // Phase 5: realtime for pulse_acknowledgements + pulse_snooze so that
+  // cross-page writes (e.g. an Aegis Escalate action that creates an ack)
+  // propagate here without a manual refresh. Bumps acksVersion to trigger
+  // the existing re-fetch effect above.
+  useEffect(() => {
+    const channel = supabase.channel("pulse-beta-acks-live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "pulse_acknowledgements" },
+          () => setAcksVersion(v => v + 1))
+      .on("postgres_changes", { event: "*", schema: "public", table: "pulse_snooze" },
+          () => setAcksVersion(v => v + 1))
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
 
   useEffect(() => {
     fetchTermContext(supabase, SCHOOL_ID).then(setTermContext);
@@ -3929,6 +4025,24 @@ function PulseBetaPageContent() {
     return map;
   }, [pulses, acks, snoozes]);
 
+  // Phase 4.5 (5): carry-over candidates — students with a concerning
+  // previous-term snapshot (peak high/critical AND ack_count > 0) who
+  // aren't already in the current-term pulses list. Visible across the
+  // whole current term when the toggle is ON; see
+  // project_term_bounded_pulse.md decision 5 for the term-long-vs-4-week
+  // reasoning.
+  const carryOverCandidates = useMemo(() => {
+    const snapshots = termContext?.previousTermSnapshots ?? [];
+    const currentIds = new Set(pulses.map(p => p.student_id));
+    return snapshots.filter(s =>
+      (s.peak_alert_level === "high" || s.peak_alert_level === "critical") &&
+      s.ack_count > 0 &&
+      !currentIds.has(s.student_id),
+    );
+  }, [termContext, pulses]);
+
+  const [showCarryOver, setShowCarryOver] = useState(false);
+
   // Keep selection synced when pulses recompute (so re-emergence shows live after ack)
   useEffect(() => {
     if (!pulses.length) return;
@@ -3941,9 +4055,49 @@ function PulseBetaPageContent() {
     if (refreshed && refreshed !== selected) setSelected(refreshed);
   }, [pulses, selected, studentParam]);
 
+  // Phase 5.4: filter the Pulse queue to PROMOTED students only. Aegis-only
+  // students (single flagged events, no pattern, no engine elevation) live
+  // on /aegis-beta — they don't belong on Pulse. The split-rules live in
+  // lib/promotion.ts. Original `pulses` array stays unfiltered so clusters
+  // / status maps / triage still see every student; only the queue display
+  // narrows to the promoted set.
+  const eventsByStudent = useMemo(() => {
+    const map = new Map<string, any[]>();
+    for (const e of events) {
+      const arr = map.get(e.student_id);
+      if (arr) arr.push(e); else map.set(e.student_id, [e]);
+    }
+    return map;
+  }, [events]);
+
+  const escalationAckSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of acks) {
+      if (a.action_taken === "escalated" || a.action_taken === "referred") {
+        set.add(a.student_id);
+      }
+    }
+    return set;
+  }, [acks]);
+
+  const eligiblePulses = useMemo(() => {
+    return pulses.filter(p => {
+      const elig = evaluatePulseEligibility({
+        pulse:            p,
+        events:           eventsByStudent.get(p.student_id) ?? [],
+        hasEscalationAck: escalationAckSet.has(p.student_id),
+      });
+      return elig.appearsInPulse;
+    });
+  }, [pulses, eventsByStudent, escalationAckSet]);
+
+  // Students filtered out (Aegis-only). Shown as a footer note so staff
+  // know the queue isn't accidentally hiding people.
+  const aegisOnlyCount = pulses.length - eligiblePulses.length;
+
   const filtered = useMemo(() =>
-    pulses.filter(p => !search || p.student_id.toLowerCase().includes(search.toLowerCase())),
-    [pulses, search]
+    eligiblePulses.filter(p => !search || p.student_id.toLowerCase().includes(search.toLowerCase())),
+    [eligiblePulses, search]
   );
 
   const schoolAvg  = useMemo(() =>
@@ -4306,11 +4460,32 @@ function PulseBetaPageContent() {
           </div>
         ) : (
         <>
-        {/* Search bar */}
-        <div className="bg-white border-b border-slate-100 px-4 py-2 flex items-center shrink-0">
+        {/* Search bar + carry-over filter toggle. The toggle is the Phase
+            4.5 (5) UI surface: when ON, the queue also includes students
+            who don't have current-term activity yet but had a concerning
+            previous term (peak high/critical AND staff engaged). Memory
+            spec was originally "auto-prunes 4 weeks into new term" but
+            was revised to whole-term — see project_term_bounded_pulse.md
+            decision 5 for the reasoning. */}
+        <div className="bg-white border-b border-slate-100 px-4 py-2 flex items-center gap-3 shrink-0">
           <input type="text" value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Search students..."
-            className="w-full border border-slate-200 rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20" />
+            className="flex-1 border border-slate-200 rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20" />
+          {carryOverCandidates.length > 0 && (
+            <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer whitespace-nowrap select-none"
+                   title="Include students with no current-term activity yet who ended last term at high/critical with staff engagement">
+              <input
+                type="checkbox"
+                checked={showCarryOver}
+                onChange={e => setShowCarryOver(e.target.checked)}
+                className="w-3.5 h-3.5 accent-[#06B6D4]"
+              />
+              <span>↩ Returning from {termContext?.previousTerm?.name ?? "previous term"}</span>
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                {carryOverCandidates.length}
+              </span>
+            </label>
+          )}
         </div>
 
         {/* Split view */}
@@ -4319,6 +4494,34 @@ function PulseBetaPageContent() {
           {/* Left list — grouped by tier */}
           <div className="w-56 shrink-0 bg-white border-r border-slate-200 overflow-auto">
             {loading && <div className="text-center py-8 text-slate-400 text-xs">Loading...</div>}
+
+            {/* Carry-over group — only rendered when the toggle is on. Sits
+                ABOVE the tier groups so opt-in carry-overs lead the list.
+                Filtered by the same search input as the rest of the list. */}
+            {!loading && showCarryOver && carryOverCandidates.length > 0 && (
+              <div>
+                <div className="sticky top-0 z-10 w-full bg-amber-50/80 border-b border-amber-100 px-4 py-1.5 flex items-center gap-1.5">
+                  <span className="text-amber-600 font-bold">↩</span>
+                  <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wider">
+                    Returning
+                  </span>
+                  <span className="ml-auto text-[10px] font-bold text-amber-700 mr-1">
+                    {carryOverCandidates.filter(s => !search || s.student_id.toLowerCase().includes(search.toLowerCase())).length}
+                  </span>
+                </div>
+                {carryOverCandidates
+                  .filter(s => !search || s.student_id.toLowerCase().includes(search.toLowerCase()))
+                  .map(snapshot => (
+                    <CarryOverListItem
+                      key={snapshot.student_id}
+                      snapshot={snapshot}
+                      isActive={selected?.student_id === snapshot.student_id}
+                      onClick={() => setSelected(synthCarryOverPulse(snapshot))}
+                    />
+                  ))}
+              </div>
+            )}
+
             {!loading && TIERS.map(tier => {
               const group = filtered.filter(p => p.alert_level === tier.key);
               if (group.length === 0) return null;
@@ -4349,6 +4552,20 @@ function PulseBetaPageContent() {
                 </div>
               );
             })}
+
+            {/* Phase 5.4 footer — Aegis-only students aren't hidden from
+                the user, they're just on the other surface. Makes the
+                split visible without forcing it into the queue. */}
+            {!loading && aegisOnlyCount > 0 && (
+              <Link href="/aegis-beta"
+                className="block px-4 py-3 border-t border-slate-100 bg-slate-50/60 hover:bg-slate-100/60 transition-colors text-[11px] text-slate-500 leading-snug">
+                <span className="font-semibold text-slate-600">
+                  + {aegisOnlyCount} Aegis-only student{aegisOnlyCount !== 1 ? "s" : ""}
+                </span>
+                {" — "}single flagged event{aegisOnlyCount !== 1 ? "s" : ""}, no pattern.{" "}
+                <span className="text-[#10B981]">View on Aegis →</span>
+              </Link>
+            )}
           </div>
 
           {/* Right detail */}
