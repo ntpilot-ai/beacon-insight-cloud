@@ -587,16 +587,25 @@ function SessionCard({
           </div>
         </div>
 
-        {/* Concern summary (LLM) or trigger preview (fallback) */}
-        {analysis?.concern_summary ? (
-          <p className="text-sm text-slate-600 leading-snug line-clamp-2">{analysis.concern_summary}</p>
-        ) : session.trigger_event ? (
-          <p className="text-xs text-slate-400 italic line-clamp-1">
-            Aegis fired on: “{session.trigger_event.prompt.slice(0, 120)}”
+        {/* The triggering prompt — what the student actually typed. ALWAYS
+            visible: it's the underlying evidence. The AI's concern summary
+            (when present) renders as a supplementary line BELOW the prompt,
+            not as a replacement — staff need to see the raw text first and
+            judge the AI interpretation against it, not the other way round. */}
+        {(session.trigger_event ?? session.events[0]) && (
+          <p className="text-sm text-slate-700 leading-snug line-clamp-2">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mr-1.5 align-middle">Prompt</span>
+            <span>“{(session.trigger_event ?? session.events[0]).prompt.slice(0, 180)}”</span>
           </p>
-        ) : (
-          <p className="text-xs text-slate-400 italic line-clamp-1">
-            {session.events[0]?.prompt?.slice(0, 120)}
+        )}
+
+        {/* AI verdict (when the LLM context analysis has run) — labelled so
+            staff can tell at a glance that this is interpretation, not the
+            raw prompt. */}
+        {analysis?.concern_summary && (
+          <p className="text-xs text-slate-500 italic leading-snug line-clamp-2 mt-1.5">
+            <span className="text-[10px] font-bold text-cyan-700 uppercase tracking-wider mr-1.5 align-middle not-italic">AI verdict</span>
+            {analysis.concern_summary}
           </p>
         )}
 
@@ -736,11 +745,552 @@ function SessionGroup({
   );
 }
 
+// ── Cluster: "Why this group" panel ──────────────────────────────────────────
+// Answers the question a DSL has when opening a cluster: "Why are these
+// specific students on the same panel?" — explicitly, before the LLM
+// assessment. Two halves:
+//   1. Type-aware narrative paragraph that translates the cluster_type +
+//      category + window into plain-English meaning ("five students used
+//      similar jailbreak prompts within 6h — likely shared template").
+//   2. Shared-elements bullets — the concrete data points the grouping is
+//      based on (category, platforms, time window, optional group_context,
+//      common matched keywords). Each is a different follow-up handle for
+//      the DSL.
+// Data sources: cluster row directly + on-the-fly aggregation across the
+// cluster members' events (passed in).
+
+const CLUSTER_TYPE_NARRATIVE: Record<
+  ClusterRow["cluster_type"],
+  (cluster: ClusterRow) => string
+> = {
+  category_spike: (c) =>
+    `${c.student_count} students all triggered ${c.category} concerns within a ${Math.round(c.time_window_hours)}-hour window. ` +
+    `That's a concentration spike — multiple students hitting the same safeguarding category simultaneously, ` +
+    `which is unusual against the school's normal baseline. Worth checking for an in-school trigger (an event, ` +
+    `a viral piece of content, a shared conversation).`,
+  coordinated_jailbreak: (c) =>
+    `${c.student_count} students used near-identical jailbreak prompts within a ${Math.round(c.time_window_hours)}-hour window. ` +
+    `Pattern suggests a shared prompt template moving through a peer group — possibly via Snapchat, Discord, or in person. ` +
+    `Tracking the source matters as much as addressing the individual attempts.`,
+  "keyword_co-occurrence": (c) =>
+    `${c.student_count} students mentioned the same keyword(s) within a ${Math.round(c.time_window_hours)}-hour window. ` +
+    `Co-occurrence on a specific term often indicates a shared external trigger — a person, event, video, or piece of content ` +
+    `the group has all been exposed to. Identifying what's being referenced is the first step.`,
+  sentiment_wave: (c) =>
+    `${c.student_count} students show simultaneous emotional downturn across the cluster window. ` +
+    `A correlated drop across a peer group can indicate a shared distressing event — class-wide news, a friend's situation, ` +
+    `or social-group dynamics. Worth checking pastoral logs and any class-level changes.`,
+};
+
+function ClusterWhyPanel({ cluster, events }: { cluster: ClusterRow; events: any[] }) {
+  const narrative = (CLUSTER_TYPE_NARRATIVE[cluster.cluster_type] ?? (() => cluster.summary))(cluster);
+
+  // Aggregate across the cluster members' events (within the cluster's time
+  // window — approximated by the cluster's own detected_at as the end and
+  // time_window_hours backwards). This gives us the platforms and matched
+  // keywords actually used by these students during the grouping event.
+  const sharedFacts = useMemo(() => {
+    const memberIds = new Set(cluster.student_ids);
+    const windowEndMs   = new Date(cluster.detected_at).getTime();
+    const windowStartMs = windowEndMs - cluster.time_window_hours * 60 * 60 * 1000;
+
+    const clusterEvents = events.filter(e => {
+      if (!memberIds.has(e.student_id)) return false;
+      const t = new Date(e.created_at).getTime();
+      return t >= windowStartMs && t <= windowEndMs;
+    });
+
+    // Platforms — which platforms appeared, with student counts per platform.
+    const platformStudents: Record<string, Set<string>> = {};
+    for (const e of clusterEvents) {
+      const p = e.platform ?? "other";
+      if (!platformStudents[p]) platformStudents[p] = new Set();
+      platformStudents[p].add(e.student_id);
+    }
+    const platforms = Object.entries(platformStudents)
+      .map(([p, set]) => ({ label: PLATFORM_LABELS[p] ?? p, students: set.size }))
+      .sort((a, b) => b.students - a.students);
+
+    // Matched keywords — frequency across the cluster's events.
+    const keywordCounts: Record<string, number> = {};
+    for (const e of clusterEvents) {
+      for (const k of (e.matched ?? [])) {
+        keywordCounts[k] = (keywordCounts[k] ?? 0) + 1;
+      }
+    }
+    const topKeywords = Object.entries(keywordCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([k, n]) => ({ keyword: k, count: n }));
+
+    // Friendly window label
+    const startDate = new Date(windowStartMs);
+    const endDate   = new Date(windowEndMs);
+    const sameDay   = startDate.toDateString() === endDate.toDateString();
+    const windowLabel = sameDay
+      ? `${startDate.toLocaleDateString("en-GB", { day: "numeric", month: "short" })} ${startDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })} → ${endDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`
+      : `${startDate.toLocaleDateString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" } as any)} → ${endDate.toLocaleDateString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" } as any)}`;
+
+    return {
+      platforms,
+      topKeywords,
+      windowLabel,
+      eventCount: clusterEvents.length,
+    };
+  }, [cluster, events]);
+
+  return (
+    <div>
+      <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Why this group</h3>
+      <p className="text-sm text-slate-700 leading-snug mb-3">{narrative}</p>
+      <div className="rounded-xl bg-slate-50 border border-slate-100 p-3 space-y-1.5">
+        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Shared across the group</p>
+        <FactRow label="Category">{cluster.category}</FactRow>
+        {sharedFacts.platforms.length > 0 && (
+          <FactRow label="Platforms">
+            {sharedFacts.platforms.map((p, i) => (
+              <span key={p.label}>
+                {p.label} <span className="text-slate-400">({p.students} student{p.students !== 1 ? "s" : ""})</span>
+                {i < sharedFacts.platforms.length - 1 ? "  ·  " : ""}
+              </span>
+            ))}
+          </FactRow>
+        )}
+        <FactRow label="Window">{sharedFacts.windowLabel}</FactRow>
+        {cluster.group_context && (
+          <FactRow label="Context">{cluster.group_context}</FactRow>
+        )}
+        {sharedFacts.topKeywords.length > 0 && (
+          <FactRow label="Top keywords">
+            {sharedFacts.topKeywords.map((k, i) => (
+              <span key={k.keyword}>
+                <span className="font-mono text-slate-700">{k.keyword}</span>{" "}
+                <span className="text-slate-400">×{k.count}</span>
+                {i < sharedFacts.topKeywords.length - 1 ? "  ·  " : ""}
+              </span>
+            ))}
+          </FactRow>
+        )}
+        <FactRow label="Events in window">
+          {sharedFacts.eventCount} total across {cluster.student_count} students
+        </FactRow>
+      </div>
+    </div>
+  );
+}
+
+function FactRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-2 text-xs">
+      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider w-32 shrink-0 mt-0.5">{label}</span>
+      <span className="text-slate-700 flex-1">{children}</span>
+    </div>
+  );
+}
+
+// ── Cluster: per-member 14-day sparklines ────────────────────────────────────
+// Replaces the misleading single-line "sentiment arcs" with stacked-bar
+// sparklines (14 daily bars per student). Each bar's height = total events
+// that day; segments stacked by risk colour. Reads at a glance: acute today
+// vs. chronic across the window vs. quiet.
+
+function ClusterMemberSparklines({ studentIds, events }: { studentIds: string[]; events: any[] }) {
+  // 14-day buckets per student. We compute outside the map so the day axis
+  // is shared across all sparklines (same days line up visually side by side).
+  const today = new Date();
+  const days  = Array.from({ length: 14 }, (_, i) => {
+    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    d.setDate(d.getDate() - (13 - i));
+    return { start: d.getTime(), end: d.getTime() + 86400000 };
+  });
+
+  const perStudent = studentIds.map(sid => {
+    const studentEvents = events.filter(e => e.student_id === sid);
+    const buckets = days.map(d => {
+      const inDay = studentEvents.filter(e => {
+        const t = new Date(e.created_at).getTime();
+        return t >= d.start && t < d.end;
+      });
+      return {
+        high:   inDay.filter(e => e.risk === "high" || e.risk === "critical").length,
+        medium: inDay.filter(e => e.risk === "medium").length,
+        low:    inDay.filter(e => e.risk === "low").length,
+      };
+    });
+    const totalsByDay = buckets.map(b => b.high + b.medium + b.low);
+    const dayMax     = Math.max(1, ...totalsByDay);
+    const totalEvents = totalsByDay.reduce((s, n) => s + n, 0);
+    const totalHigh   = buckets.reduce((s, b) => s + b.high, 0);
+    return { sid, buckets, dayMax, totalEvents, totalHigh };
+  });
+
+  // Global max so bar heights are comparable across students (a 1-event day
+  // for Student A and a 5-event day for Student B don't both render full-
+  // height). If any student has activity, scale to the highest bar across
+  // the cluster.
+  const globalDayMax = Math.max(1, ...perStudent.map(s => s.dayMax));
+
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-3">
+        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide">Individual activity (last 14 days)</h3>
+        <span className="text-[10px] text-slate-400">heights comparable across students</span>
+      </div>
+      <div className="space-y-2.5">
+        {perStudent.map(({ sid, buckets, totalEvents, totalHigh }) => (
+          <div key={sid} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+            <div className="flex items-baseline justify-between mb-1.5">
+              <span className="text-xs font-semibold text-slate-700">{sid}</span>
+              <span className="text-[10px] text-slate-400">
+                {totalEvents} event{totalEvents !== 1 ? "s" : ""}
+                {totalHigh > 0 ? ` · ${totalHigh} high` : ""}
+              </span>
+            </div>
+            <div className="flex items-end gap-[2px] h-10">
+              {buckets.map((b, i) => {
+                const total = b.high + b.medium + b.low;
+                const heightPct = total === 0 ? 0 : (total / globalDayMax) * 100;
+                const date = new Date(days[i].start);
+                const title = total === 0
+                  ? `${date.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}: no events`
+                  : `${date.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}: ${total} events (${b.high} high, ${b.medium} med, ${b.low} low)`;
+                return (
+                  <div
+                    key={i}
+                    className="flex-1 flex flex-col-reverse rounded-sm overflow-hidden bg-slate-200/60"
+                    style={{ height: "100%" }}
+                    title={title}
+                  >
+                    {total > 0 && (
+                      <div className="w-full flex flex-col-reverse" style={{ height: `${Math.max(heightPct, 6)}%` }}>
+                        {b.low    > 0 && <div style={{ flex: b.low    }} className="bg-emerald-500" />}
+                        {b.medium > 0 && <div style={{ flex: b.medium }} className="bg-amber-500"   />}
+                        {b.high   > 0 && <div style={{ flex: b.high   }} className="bg-red-500"     />}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex items-center justify-between mt-1 text-[9px] text-slate-400">
+              <span>{new Date(days[0].start).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>
+              <span>today</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Platform Activity panel ──────────────────────────────────────────────────
+// Replaces the engine Signal Breakdown panel with a DSL-readable view of
+// where this student is doing their AI activity. One row per supported
+// platform; bar width is proportional to total event count (vs. the
+// student's highest-volume platform); segments are stacked by risk colour
+// within the bar.
+//
+// Reading the bars tells two safeguarding stories the rest of the panel
+// doesn't:
+//   - Cross-platform spread (Tyler-shape) = deliberate exploration,
+//     bypassing platform-specific guardrails
+//   - Single-platform fixation (Sophie-shape) = parasocial dependency,
+//     using one AI as the confidant
+// Platforms with zero events still render (greyed) so absence is visible.
+
+const PLATFORM_LABELS: Record<string, string> = {
+  "chatgpt.com":           "ChatGPT",
+  "claude.ai":             "Claude",
+  "gemini.google.com":     "Gemini",
+  "copilot.microsoft.com": "Copilot",
+};
+const SUPPORTED_PLATFORMS = Object.keys(PLATFORM_LABELS);
+
+function PlatformActivityPanel({ events }: { events: any[] }) {
+  const stats = useMemo(() => {
+    const byPlatform: Record<string, { high: number; medium: number; low: number; total: number }> = {};
+    for (const p of SUPPORTED_PLATFORMS) byPlatform[p] = { high: 0, medium: 0, low: 0, total: 0 };
+
+    // "Other" bucket for events on unsupported platforms — shouldn't happen
+    // with the current extension manifest but kept for forward-compatibility.
+    const other = { high: 0, medium: 0, low: 0, total: 0 };
+
+    for (const e of events) {
+      const target = byPlatform[e.platform] ?? other;
+      target.total++;
+      if (e.risk === "high" || e.risk === "critical") target.high++;
+      else if (e.risk === "medium")                   target.medium++;
+      else                                             target.low++;
+    }
+
+    const max = Math.max(1, ...Object.values(byPlatform).map(s => s.total), other.total);
+
+    const rows = SUPPORTED_PLATFORMS.map(p => ({
+      platform: p,
+      label:    PLATFORM_LABELS[p],
+      ...byPlatform[p],
+      barPct:   (byPlatform[p].total / max) * 100,
+    }));
+    if (other.total > 0) {
+      rows.push({ platform: "other", label: "Other", ...other, barPct: (other.total / max) * 100 });
+    }
+    // Sort by total desc so the dominant platform reads first
+    rows.sort((a, b) => b.total - a.total);
+    return { rows, totalEvents: events.length };
+  }, [events]);
+
+  const used = stats.rows.filter(r => r.total > 0).length;
+
+  return (
+    <div className="bg-slate-50 rounded-2xl p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Platform Activity</div>
+        <div className="text-[10px] text-slate-400">
+          {used} / {SUPPORTED_PLATFORMS.length} platform{used !== 1 ? "s" : ""} used
+        </div>
+      </div>
+
+      <div className="space-y-2.5">
+        {stats.rows.map(r => (
+          <div key={r.platform} className="flex items-center gap-2"
+               title={r.total === 0 ? "No events on this platform this window" : undefined}>
+            <div className={`w-16 text-xs shrink-0 ${r.total === 0 ? "text-slate-300" : "text-slate-600"}`}>
+              {r.label}
+            </div>
+            {/* Track + filled bar. Track is full-width slate; the inner
+                container is sized by barPct so platform totals are comparable
+                at a glance. Risk segments within use flex so they distribute
+                proportionally to their share of this platform's events. */}
+            <div className="flex-1 h-3 rounded bg-slate-100 overflow-hidden relative">
+              {r.total > 0 && (
+                <div className="absolute inset-y-0 left-0 flex rounded-r overflow-hidden"
+                     style={{ width: `${Math.max(r.barPct, 4)}%` }}>
+                  {r.high   > 0 && <div style={{ flex: r.high   }} className="bg-red-500"     />}
+                  {r.medium > 0 && <div style={{ flex: r.medium }} className="bg-amber-500"   />}
+                  {r.low    > 0 && <div style={{ flex: r.low    }} className="bg-emerald-500" />}
+                </div>
+              )}
+            </div>
+            <div className={`text-xs shrink-0 w-32 text-right ${r.total === 0 ? "text-slate-300" : "text-slate-500"}`}>
+              {r.total === 0 ? "—" : (
+                <>
+                  <span className="font-semibold text-slate-700">{r.total}</span>
+                  {(r.high > 0 || r.medium > 0) && (
+                    <span className="text-slate-400 ml-1">
+                      ({[
+                        r.high   > 0 ? `${r.high} high`   : null,
+                        r.medium > 0 ? `${r.medium} med`  : null,
+                      ].filter(Boolean).join(" · ")})
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        ))}
+        {stats.totalEvents === 0 && (
+          <div className="text-xs text-slate-400 italic py-2">No events in this window.</div>
+        )}
+      </div>
+
+      {/* Legend — tiny, only shows once user has any flagged activity to interpret */}
+      {stats.rows.some(r => r.high > 0 || r.medium > 0) && (
+        <div className="flex items-center gap-3 mt-3 pt-2.5 border-t border-slate-200/60 text-[10px] text-slate-400">
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-red-500" />high</span>
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-amber-500" />medium</span>
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-emerald-500" />low</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Returning-pattern row (Phase 4.5 header redesign) ────────────────────────
+// Single banner that surfaces the "is this concern new or returning?" answer.
+// Replaces the two earlier amber treatments (within-term re_emergence banner
+// + separate previous-term row). One unified line, with snapshot detail
+// available on tap-to-expand.
+//
+// Priority for the headline copy:
+//   1. Within-term re_emergence (most recent / most actionable signal) →
+//      "Pattern returned — '{category}' resurfaced since acknowledgement on
+//      {date}". Surfaces the immediate context staff need.
+//   2. Otherwise, previous-term snapshot with carry-over concern (peak high/
+//      critical AND ack_count > 0) → "Returning pattern from {term} —
+//      peaked {level}, {n} acks".
+//   3. Otherwise, plain "Previous term: {term} · {summary}" muted line.
+// Snapshot expand panel only renders when a snapshot is available.
+
+function ReturningPatternRow({
+  pulse,
+  snapshot,
+  term,
+  expanded,
+  onToggle,
+}: {
+  pulse:    StudentPulseV3;
+  snapshot: PulseTermSnapshot | undefined;
+  term:     SchoolTerm | null;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  // Carry-over = the previous term ended with concerning peak AND staff
+  // engaged. This is the threshold for "you should know about this."
+  const carryOver = !!(
+    snapshot &&
+    (snapshot.peak_alert_level === "high" || snapshot.peak_alert_level === "critical") &&
+    snapshot.ack_count > 0
+  );
+
+  const withinTermReturn = !!(pulse.re_emergence && pulse.last_acknowledged?.dominant_category);
+
+  // Headline-mode decides the visual treatment + copy. "concern" gets the
+  // amber emphasised treatment; "muted" is a quiet previous-term breadcrumb.
+  const mode: "within-term" | "carry-over" | "muted" =
+    withinTermReturn ? "within-term"
+    : carryOver      ? "carry-over"
+    :                  "muted";
+
+  const isConcern = mode !== "muted";
+  // Snapshot exists controls whether tap-to-expand is available.
+  const hasSnapshot = !!(snapshot && term);
+
+  const containerCls = isConcern
+    ? "mt-3 rounded-xl border border-amber-200 bg-amber-50/70"
+    : "mt-2 rounded-xl border border-slate-200 bg-slate-50/70";
+  const iconCls = isConcern ? "text-amber-600 font-bold" : "text-slate-400";
+  const labelCls = isConcern ? "font-semibold text-amber-900" : "text-[10px] font-bold text-slate-400 uppercase tracking-wider";
+  const bodyCls  = isConcern ? "text-amber-800" : "text-slate-600";
+
+  // Headline copy per mode
+  let headlineLabel: string;
+  let headlineBody:  string;
+  if (mode === "within-term") {
+    headlineLabel = "Pattern returned";
+    headlineBody  = `“${pulse.last_acknowledged!.dominant_category}” resurfaced since acknowledgement on ${dateShort(pulse.last_acknowledged!.acknowledged_at)}`;
+  } else if (mode === "carry-over") {
+    const peakWord = snapshot!.peak_alert_level;
+    const acks     = snapshot!.ack_count;
+    const refs     = snapshot!.referral_count;
+    const refSfx   = refs > 0 ? `, ${refs} referral${refs !== 1 ? "s" : ""}` : "";
+    headlineLabel  = "Returning pattern";
+    headlineBody   = `from ${term!.name} — peaked ${peakWord}, ${acks} ack${acks !== 1 ? "s" : ""}${refSfx}`;
+  } else {
+    headlineLabel  = "Previous term";
+    headlineBody   = term
+      ? `${term.name} · ${(snapshot && snapshot.flagged_events > 0)
+          ? `${snapshot.flagged_events} flagged event${snapshot.flagged_events !== 1 ? "s" : ""}`
+          : "no concerns"}`
+      : "no prior term";
+  }
+
+  return (
+    <div className={containerCls}>
+      <button
+        type="button"
+        onClick={hasSnapshot ? onToggle : undefined}
+        disabled={!hasSnapshot}
+        className={`w-full flex items-center gap-2 px-3 py-2 text-xs text-left rounded-xl ${hasSnapshot ? "hover:bg-amber-50 cursor-pointer" : "cursor-default"}`}
+        aria-expanded={hasSnapshot ? expanded : undefined}
+      >
+        {isConcern && <span className={iconCls}>↩</span>}
+        <span className={labelCls}>{headlineLabel}</span>
+        <span className={bodyCls}>{headlineBody}</span>
+        {hasSnapshot && (
+          <span className={`ml-auto text-[10px] ${isConcern ? "text-amber-700" : "text-slate-400"}`}>
+            {expanded ? "▴ hide" : "▾ details"}
+          </span>
+        )}
+      </button>
+
+      {/* Expanded snapshot detail — same grid as before, scoped to the
+          previous-term snapshot. Only shows when a snapshot is available
+          (within-term re-emergence without a prior snapshot has nothing
+          to expand into). */}
+      {expanded && hasSnapshot && (
+        <PreviousTermDetail snapshot={snapshot!} term={term!} />
+      )}
+    </div>
+  );
+}
+
+// Previous-term snapshot detail grid — extracted from the earlier
+// PreviousTermRow so ReturningPatternRow can reuse it without duplicating
+// the layout. Pure presentation; no own state.
+function PreviousTermDetail({ snapshot, term }: { snapshot: PulseTermSnapshot; term: SchoolTerm }) {
+  const peakChip  = ALERT[snapshot.peak_alert_level === "normal" ? "low" : snapshot.peak_alert_level] ?? ALERT.low;
+  const finalChip = ALERT[snapshot.final_alert_level === "normal" ? "low" : snapshot.final_alert_level] ?? ALERT.low;
+  const openChip  = ALERT[snapshot.opening_alert_level === "normal" ? "low" : snapshot.opening_alert_level] ?? ALERT.low;
+  const trajLabel = trajectoryLabel(snapshot.trajectory);
+  const referrals = snapshot.referral_count;
+  const acks      = snapshot.ack_count;
+
+  return (
+    <div className="px-3 pb-3 border-t border-amber-200/60 pt-3 grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
+      <DetailLine label="Term window">
+        {dateShort(term.start_date)} – {dateShort(term.end_date)}
+      </DetailLine>
+      <DetailLine label="Pattern">{snapshot.pattern}</DetailLine>
+
+      <DetailLine label="Opening alert">
+        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${openChip.bg} ${openChip.text}`}>
+          {openChip.label}
+        </span>
+      </DetailLine>
+      <DetailLine label="Peak alert">
+        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${peakChip.bg} ${peakChip.text}`}>
+          {peakChip.label}
+        </span>
+      </DetailLine>
+
+      <DetailLine label="Final alert">
+        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${finalChip.bg} ${finalChip.text}`}>
+          {finalChip.label}
+        </span>
+        <span className="ml-2 text-slate-400">(score {snapshot.final_score})</span>
+      </DetailLine>
+      <DetailLine label="Trajectory">{trajLabel ?? snapshot.trajectory}</DetailLine>
+
+      <DetailLine label="Acknowledgements">
+        {acks} total{referrals > 0 ? ` · ${referrals} referred/escalated` : ""}
+      </DetailLine>
+      <DetailLine label="Layer-3 days">{snapshot.layer3_event_days}</DetailLine>
+
+      <DetailLine label="Total events">{snapshot.total_events} ({snapshot.flagged_events} flagged)</DetailLine>
+      <DetailLine label="Dominant categories">
+        {snapshot.dominant_categories.length > 0
+          ? snapshot.dominant_categories.join(", ")
+          : <span className="text-slate-400">none</span>}
+      </DetailLine>
+
+      {snapshot.key_incidents.length > 0 && (
+        <div className="col-span-2 mt-2">
+          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Key incidents</div>
+          <div className="space-y-1.5">
+            {snapshot.key_incidents.map((inc, i) => (
+              <div key={i} className="flex items-start gap-2 text-xs">
+                <span className="text-slate-400 shrink-0 w-24">{dateShort(inc.timestamp)}</span>
+                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${ALERT[inc.risk_level === "critical" ? "critical" : inc.risk_level === "high" ? "high" : inc.risk_level === "medium" ? "medium" : "low"].bg} ${ALERT[inc.risk_level === "critical" ? "critical" : inc.risk_level === "high" ? "high" : inc.risk_level === "medium" ? "medium" : "low"].text}`}>
+                  {inc.risk_level}
+                </span>
+                <span className="text-slate-600 shrink-0">{inc.category}</span>
+                <span className="text-slate-500 truncate min-w-0" title={inc.summary}>— {inc.summary}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="col-span-2 mt-1 text-[10px] text-slate-400">
+        Locked {dateShort(snapshot.locked_at)}
+      </div>
+    </div>
+  );
+}
+
 // ── Previous-term row (Phase 4) ───────────────────────────────────────────────
-// Compact one-liner that mirrors the Pattern fingerprint row visually.
-// Surfaces the prior term's snapshot data so staff can answer
-// "did this student have a tough previous term?" without leaving the panel.
-// Click expands inline into the full snapshot detail.
+// Kept for compatibility; superseded by ReturningPatternRow above. Will be
+// removed once the redesign is validated and no other call sites use it.
 
 function PreviousTermRow({
   snapshot,
@@ -1123,9 +1673,33 @@ function StudentDetail({
   return (
     <div className="flex flex-col h-full overflow-auto">
 
-      {/* ── Header strip ── */}
+      {/* ── Header strip (redesigned — three load-bearing facts up top) ──
+          Design intent: surface the three questions a DSL actually triages with,
+          in this order:
+            1. "How urgent is this right now?"   → name + alert chip + Pulse score
+                                                   + acute-spike chip (its own row,
+                                                   so it reads as the action-trigger,
+                                                   not just another tag)
+            2. "What kind of concern is this?"   → primary-signal sentence as lede.
+                                                   Drops the category badge row —
+                                                   the sentence already names the
+                                                   category meaningfully.
+            3. "New, or returning?"              → returning-pattern row (only when
+                                                   the previous-term snapshot
+                                                   indicates carry-over OR within-
+                                                   term re_emergence fired). One
+                                                   unified banner replaces the two
+                                                   separate amber treatments.
+          Everything else — fingerprint pattern, event counts, date range, vs avg,
+          PDF — drops to a muted footer that reads as supporting metadata, not
+          competing with the answers. */}
       <div className="px-6 py-5 border-b border-slate-100 shrink-0" style={{ background: alert.light }}>
-        {/* Row 1 — identity (left) + inline pulse score block (right) */}
+        {/* Row 1 — identity + acute-state chips + Pulse score block.
+            Acute / rapid-escalation chips live inline with the name — the
+            row has plenty of horizontal space and inline placement keeps the
+            "this student needs attention now" cue on the same visual line
+            as their identity. Threshold hint moves to a tooltip on the
+            score (was a permanent line — redundant). */}
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-2 flex-wrap min-w-0">
             <h2 className="text-xl font-bold text-slate-800 break-all">{pulse.student_id}</h2>
@@ -1138,57 +1712,101 @@ function StudentDetail({
                 ⚡ Acute spike today
               </span>
             )}
-            {pulse.rapid_escalation && (
+            {pulse.rapid_escalation && !pulse.layer3_active && (
               <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-red-600 text-white animate-pulse">
                 ⚡ Rapid Escalation
               </span>
             )}
-            {pulse.re_emergence && (
-              <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-amber-500 text-white">
-                ↩ Re-emergence
+          </div>
+
+          <div className="flex items-baseline gap-2 shrink-0">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Pulse</span>
+            <span
+              className="text-3xl font-bold leading-none"
+              style={{ color: alert.bar }}
+              title="Alert bands: ≥25 medium · ≥50 high · ≥70 urgent"
+            >
+              {pulse.pulse_score}
+            </span>
+            {/* When Layer 3 fires, the aggregated trend label can read "stable"
+                even though today shows an acute spike — suppress it to avoid
+                the contradiction. The acute-spike chip carries the live signal
+                instead. */}
+            {!pulse.layer3_active && (
+              <span className={`text-xs font-semibold ${trend.color}`}>
+                {trend.icon} {pulse.trend_direction}
               </span>
             )}
           </div>
-
-          <div className="flex flex-col items-end shrink-0">
-            <div className="flex items-baseline gap-2">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Pulse</span>
-              <span className="text-3xl font-bold leading-none" style={{ color: alert.bar }}>{pulse.pulse_score}</span>
-              {/* When Layer 3 fires, the aggregated trend label can read "stable"
-                  even though today shows an acute spike — suppress it to avoid
-                  the contradiction. The "⚡ Acute spike today" chip carries the
-                  current signal instead. */}
-              {!pulse.layer3_active && (
-                <span className={`text-xs font-semibold ${trend.color}`}>
-                  {trend.icon} {pulse.trend_direction}
-                </span>
-              )}
-              {pulse.vs_school_avg !== undefined && pulse.vs_school_avg !== 0 && (
-                <span className="text-xs text-slate-400"
-                      title="Context only — never used to suppress an alert">
-                  {pulse.vs_school_avg > 0 ? "+" : ""}{pulse.vs_school_avg} vs avg
-                </span>
-              )}
-              {pulse.context_boost !== 0 && (
-                <span className="text-[10px] text-slate-400">
-                  ctx {pulse.context_boost > 0 ? "+" : ""}{pulse.context_boost}
-                </span>
-              )}
-            </div>
-            <span className="text-[10px] text-slate-400 mt-0.5"
-                  title="Alert bands: ≥25 medium · ≥50 high · ≥70 urgent">
-              ≥50 high · ≥70 urgent
-            </span>
-          </div>
         </div>
 
-        {/* Row 2 — meta strip + PDF action */}
-        <div className="flex items-center gap-2 text-xs text-slate-400 flex-wrap mt-1.5">
+
+        {/* Row 3 — primary signal as the lede sentence. The most useful single
+            answer to "what kind of concern is this?". Drops the category badge
+            row that used to sit alongside; the sentence already names the
+            category meaningfully ("Block & Re-attempt Rate — 7 prompts
+            blocked…" reads better than a stacked [Jailbreak 14] pill). */}
+        {pulse.dominant_signal && (
+          <div className="mt-3 text-sm text-slate-700 leading-snug">
+            <span className="font-semibold">{pulse.dominant_signal.label}</span>
+            <span className="text-slate-500"> — {pulse.dominant_signal.detail}</span>
+          </div>
+        )}
+
+        {/* Row 4 — returning-pattern banner. Unified treatment that replaces
+            the two separate amber bands (within-term re_emergence + previous-
+            term carry-over). Prefers the within-term framing when an ack is
+            in scope, falls back to the snapshot framing. Tap to expand into
+            the full previous-term snapshot grid. */}
+        {(previousTermSnapshot && previousTerm) || (pulse.re_emergence && pulse.last_acknowledged) ? (
+          <ReturningPatternRow
+            pulse={pulse}
+            snapshot={previousTermSnapshot}
+            term={previousTerm ?? null}
+            expanded={showPrevTermDetail}
+            onToggle={() => setShowPrevTermDetail(v => !v)}
+          />
+        ) : null}
+
+        {/* Row 5 — pattern (fingerprint) row. Secondary now — the within-term
+            baseline, behind the headline. Only renders when there's a real
+            fingerprint window populated. */}
+        {fingerprintLead && (
+          <div className="flex items-center gap-x-3 gap-y-1 flex-wrap mt-2 text-xs">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider shrink-0">Pattern</span>
+            <span className="font-semibold text-slate-700">{fingerprintLead}</span>
+            <span className="text-slate-400">· {pulse.fingerprint.event_count} historical event{pulse.fingerprint.event_count !== 1 ? "s" : ""}</span>
+          </div>
+        )}
+
+        {/* Row 6 — muted footer. Date range collapsed to a compact
+            "23 May → 28 May". vs-school-avg muted per the school-avg-context-
+            only design rule. PDF button restyled to slate so it doesn't
+            compete visually with the alert chips. */}
+        <div className="flex items-center gap-2 text-xs text-slate-400 flex-wrap mt-3 pt-2.5 border-t border-slate-200/60">
           <span>{pulse.total_events} events</span>
           <span className="text-slate-300">·</span>
-          <span>First {new Date(pulse.first_seen).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</span>
-          <span className="text-slate-300">·</span>
-          <span>Last {new Date(pulse.last_seen).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>
+          <span>
+            {new Date(pulse.first_seen).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+            {" → "}
+            {new Date(pulse.last_seen).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+          </span>
+          {pulse.vs_school_avg !== undefined && pulse.vs_school_avg !== 0 && (
+            <>
+              <span className="text-slate-300">·</span>
+              <span title="Context only — never used to suppress an alert">
+                {pulse.vs_school_avg > 0 ? "+" : ""}{pulse.vs_school_avg} vs avg
+              </span>
+            </>
+          )}
+          {pulse.context_boost !== 0 && (
+            <>
+              <span className="text-slate-300">·</span>
+              <span className="text-slate-400" title="Engine context boost applied to the raw signal score">
+                ctx {pulse.context_boost > 0 ? "+" : ""}{pulse.context_boost}
+              </span>
+            </>
+          )}
           {feedbackCount > 0 && (
             <>
               <span className="text-slate-300">·</span>
@@ -1199,68 +1817,11 @@ function StudentDetail({
           )}
           <button
             onClick={() => window.open(`/reports/student?student=${encodeURIComponent(pulse.student_id)}`, "_blank")}
-            className="ml-auto text-xs font-semibold text-[#06B6D4] border border-[#06B6D4] px-3 py-1 rounded-xl hover:bg-cyan-50 transition-all"
+            className="ml-auto text-xs font-semibold text-slate-500 border border-slate-300 px-2.5 py-0.5 rounded-lg hover:bg-white hover:text-slate-700 transition-all"
           >
-            ⬇ PDF Report
+            ⬇ PDF
           </button>
         </div>
-
-        {/* Behavioural fingerprint — lead diagnostic. Promoted from a footnote
-            to a top-line summary because it answers the staff question "what
-            is the longer-term pattern here?" more directly than any single
-            signal score does. */}
-        {fingerprintLead && (
-          <div className="flex items-center gap-x-3 gap-y-1 flex-wrap mt-2 text-xs">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider shrink-0">Pattern</span>
-            <span className="font-semibold text-slate-700">{fingerprintLead}</span>
-            <span className="text-slate-400">· {pulse.fingerprint.event_count} historical event{pulse.fingerprint.event_count !== 1 ? "s" : ""}</span>
-          </div>
-        )}
-
-        {/* Phase 4: Previous-term row. Mirrors the Pattern row visually but
-            describes the immediately prior term from pulse_term_snapshots.
-            Compact one-liner; click to expand into the full snapshot detail.
-            Renders nothing when there's no prior snapshot for this student. */}
-        {previousTermSnapshot && previousTerm && (
-          <PreviousTermRow
-            snapshot={previousTermSnapshot}
-            term={previousTerm}
-            expanded={showPrevTermDetail}
-            onToggle={() => setShowPrevTermDetail(v => !v)}
-          />
-        )}
-
-        {/* Row 3 — categories + primary concern on the same line */}
-        {(pulse.categories.length > 0 || pulse.dominant_signal) && (
-          <div className="flex items-center gap-x-3 gap-y-2 flex-wrap mt-3">
-            {pulse.categories.map(cat => (
-              <div key={cat.name} className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-white text-[11px] font-bold"
-                style={{ background: CAT_COLOR[cat.name] || "#64748b" }}>
-                {cat.name}
-                <span className="bg-white/20 px-1.5 rounded-full">{cat.count}</span>
-              </div>
-            ))}
-            {pulse.dominant_signal && (
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="w-0.5 h-4 rounded-full shrink-0" style={{ background: alert.bar }} />
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider shrink-0">Primary</span>
-                <span className="text-xs font-bold text-slate-700 truncate">{pulse.dominant_signal.label}</span>
-                <span className="text-xs text-slate-500 truncate">— {pulse.dominant_signal.detail}</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Re-emergence banner */}
-        {pulse.re_emergence && pulse.last_acknowledged?.dominant_category && (
-          <div className="mt-3 flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-            <span className="text-amber-600 font-bold">↩</span>
-            <div className="text-xs text-amber-800">
-              <span className="font-bold">Pattern returned</span> — “{pulse.last_acknowledged.dominant_category}”
-              has resurfaced since acknowledgement on {dateShort(pulse.last_acknowledged.acknowledged_at)}.
-            </div>
-          </div>
-        )}
       </div>
 
       {/* ── Body ── */}
@@ -1409,42 +1970,14 @@ function StudentDetail({
             </ResponsiveContainer>
           </div>
 
-          {/* Signal bars — compact. Zero-score signals are dilution for staff
-              skimming, so they're hidden by default behind a "View all" toggle.
-              Remaining signals are sorted descending so the actionable ones
-              are at the top. */}
-          <div className="bg-slate-50 rounded-2xl p-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Signal Breakdown</div>
-              {zeroSignalCount > 0 && (
-                <button
-                  onClick={() => setShowZeroSignals(v => !v)}
-                  className="text-[10px] font-semibold text-slate-500 hover:text-[#06B6D4]"
-                >
-                  {showZeroSignals
-                    ? `Hide ${zeroSignalCount} inactive`
-                    : `+ ${zeroSignalCount} inactive`}
-                </button>
-              )}
-            </div>
-            <div className="space-y-2.5">
-              {visibleSignals.map(sig => {
-                const c = sig.score >= 70 ? "#DC2626" : sig.score >= 40 ? "#F59E0B" : sig.score > 0 ? "#10B981" : "#CBD5E1";
-                return (
-                  <div key={sig.id} className="flex items-center gap-2" title={sig.detail}>
-                    <div className="w-36 text-xs text-slate-500 shrink-0">{sig.label}</div>
-                    <div className="flex-1 h-1.5 rounded-full bg-slate-200 overflow-hidden">
-                      <div className="h-full rounded-full" style={{ width: `${sig.score}%`, background: c }} />
-                    </div>
-                    <div className="text-xs font-bold w-6 text-right shrink-0" style={{ color: c }}>{sig.score}</div>
-                  </div>
-                );
-              })}
-              {visibleSignals.length === 0 && (
-                <div className="text-xs text-slate-400 italic py-2">All signals quiet in this window.</div>
-              )}
-            </div>
-          </div>
+          {/* Platform activity — replaces the engine Signal Breakdown panel
+              with something a DSL can actually read. One bar per supported
+              platform, width proportional to event count, segments stacked
+              by risk colour. Carries safeguarding signal of its own —
+              cross-platform spread reads as deliberate exploration; single-
+              platform fixation can read as parasocial dependency (see Sophie
+              vs Tyler in the seeded scenarios). */}
+          <PlatformActivityPanel events={studentEvents} />
 
         </div>
 
@@ -2134,6 +2667,7 @@ function ClusterCard({
 function ClusterDetailView({
   cluster,
   pulsesById,
+  events,
   onClose,
   onAcknowledge,
   onDismiss,
@@ -2143,6 +2677,11 @@ function ClusterDetailView({
 }: {
   cluster:      ClusterRow;
   pulsesById:   Map<string, StudentPulseV3>;
+  // Page-level event set. Used to compute shared-elements (platforms,
+  // matched keywords) across the cluster and to render per-student
+  // sparklines. Passing events through instead of re-fetching per panel
+  // open keeps the open-cluster interaction snappy.
+  events:       any[];
   onClose:      () => void;
   onAcknowledge:(id: string, note: string) => void;
   onDismiss:    (id: string) => void;
@@ -2153,10 +2692,9 @@ function ClusterDetailView({
   const [note, setNote] = useState("");
   const triage   = cluster.cluster_triage_results?.[0];
   const style    = CLUSTER_SEVERITY_STYLE[cluster.severity] ?? CLUSTER_SEVERITY_STYLE.notable;
-
-  const memberPulses = cluster.student_ids
-    .map(sid => ({ label: sid, pulse: pulsesById.get(sid) }))
-    .filter(m => !!m.pulse);
+  // pulsesById is kept for the individual triage-level pills; redesigned
+  // sparklines compute directly from events.
+  void pulsesById;
 
   const timelineItems = cluster.student_ids.map((sid, i) => ({
     label: sid,
@@ -2187,6 +2725,13 @@ function ClusterDetailView({
         </div>
 
         <div className="px-6 py-5 space-y-6">
+          {/* Why this group — type-aware narrative + shared-elements bullets.
+              Sits ABOVE the LLM assessment so the assessment reads as "given
+              this context, here's what I think" rather than as the cluster's
+              only narrative. The data comes from the cluster row's own
+              fields plus aggregations across the cluster members' events. */}
+          <ClusterWhyPanel cluster={cluster} events={events} />
+
           {/* LLM assessment */}
           {triage && (
             <div>
@@ -2227,27 +2772,13 @@ function ClusterDetailView({
             <p className="text-[11px] text-slate-400 mt-2">Click a student to view their full profile.</p>
           </div>
 
-          {/* Anonymised trend arcs side by side */}
-          {memberPulses.length > 0 && (
-            <div>
-              <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">Sentiment arcs (last 14 days)</h3>
-              <div className="grid grid-cols-2 gap-3">
-                {memberPulses.map(({ label, pulse }) => (
-                  <div key={label} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-                    <p className="text-[11px] font-semibold text-slate-600 mb-1">{label}</p>
-                    <div className="h-14">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={pulse!.trend.map((v, i) => ({ i, v }))}>
-                          <Line type="monotone" dataKey="v" stroke="#06B6D4" dot={false} strokeWidth={1.5} />
-                          <YAxis domain={[0, 100]} hide />
-                          <XAxis dataKey="i" hide />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+          {/* Per-student activity sparklines — replaces the misleading line
+              "sentiment arcs" with 14-day severity-stacked bar mini-charts.
+              Each bar is one day; segments stacked by risk colour (low/med
+              /high). Reads at a glance: which student is acute today vs.
+              chronic across the window vs. quiet. */}
+          {cluster.student_ids.length > 0 && (
+            <ClusterMemberSparklines studentIds={cluster.student_ids} events={events} />
           )}
 
           {/* Acknowledge as group */}
@@ -2421,6 +2952,7 @@ function ClusterListItem({
 function ClusterDetailPanel({
   cluster,
   pulsesById,
+  events,
   onAcknowledge,
   onDismiss,
   onViewProfile,
@@ -2429,6 +2961,7 @@ function ClusterDetailPanel({
 }: {
   cluster:       ClusterRow;
   pulsesById:    Map<string, StudentPulseV3>;
+  events:        any[];
   onAcknowledge: (id: string, note: string) => void;
   onDismiss:     (id: string) => void;
   onViewProfile: (studentId: string) => void;
@@ -2439,10 +2972,9 @@ function ClusterDetailPanel({
   const triage  = cluster.cluster_triage_results?.[0];
   const style   = CLUSTER_SEVERITY_STYLE[cluster.severity] ?? CLUSTER_SEVERITY_STYLE.notable;
   const isDone  = !!(cluster.dismissed_at || cluster.acknowledged_at);
-
-  const memberPulses = cluster.student_ids
-    .map(sid => ({ label: sid, pulse: pulsesById.get(sid) }))
-    .filter(m => !!m.pulse);
+  // pulsesById is kept for the individual triage-level pills and the Show in
+  // profile button; the redesigned sparklines compute directly from events.
+  void pulsesById;
 
   const timelineItems = cluster.student_ids.map((sid, i) => ({
     label: sid,
@@ -2490,6 +3022,9 @@ function ClusterDetailPanel({
           independently; the group context may inform but does not replace individual follow-up.
         </div>
 
+        {/* Why this group — type-aware narrative + shared-elements bullets */}
+        <ClusterWhyPanel cluster={cluster} events={events} />
+
         {/* LLM assessment */}
         {triage && (
           <div>
@@ -2530,27 +3065,9 @@ function ClusterDetailPanel({
           <p className="text-[11px] text-slate-400 mt-2">Click a student to view their full individual profile.</p>
         </div>
 
-        {/* Sentiment arcs */}
-        {memberPulses.length > 0 && (
-          <div>
-            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">Sentiment arcs (last 14 days)</h3>
-            <div className="grid grid-cols-2 gap-3">
-              {memberPulses.map(({ label, pulse }) => (
-                <div key={label} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-                  <p className="text-[11px] font-semibold text-slate-600 mb-1">{label}</p>
-                  <div className="h-14">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={pulse!.trend.map((v, i) => ({ i, v }))}>
-                        <Line type="monotone" dataKey="v" stroke="#06B6D4" dot={false} strokeWidth={1.5} />
-                        <YAxis domain={[0, 100]} hide />
-                        <XAxis dataKey="i" hide />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+        {/* Per-student activity sparklines — 14-day severity-stacked bars */}
+        {cluster.student_ids.length > 0 && (
+          <ClusterMemberSparklines studentIds={cluster.student_ids} events={events} />
         )}
 
         {/* Acknowledge / dismiss */}
@@ -2594,6 +3111,7 @@ function ClusterDetailPanel({
 function GroupsTab({
   clusters,
   pulsesById,
+  events,
   selectedCluster,
   onSelectCluster,
   onAcknowledge,
@@ -2604,6 +3122,7 @@ function GroupsTab({
 }: {
   clusters:        ClusterRow[];
   pulsesById:      Map<string, StudentPulseV3>;
+  events:          any[];
   selectedCluster: ClusterRow | null;
   onSelectCluster: (c: ClusterRow | null) => void;
   onAcknowledge:   (id: string, note: string) => void;
@@ -2701,6 +3220,7 @@ function GroupsTab({
           <ClusterDetailPanel
             cluster={displayCluster}
             pulsesById={pulsesById}
+            events={events}
             onAcknowledge={onAcknowledge}
             onDismiss={onDismiss}
             onViewProfile={onViewProfile}
@@ -3732,6 +4252,7 @@ function PulseBetaPageContent() {
             <GroupsTab
               clusters={clusters}
               pulsesById={pulsesById}
+              events={events}
               selectedCluster={selectedCluster}
               onSelectCluster={setSelectedCluster}
               onAcknowledge={acknowledgeCluster}
@@ -3816,6 +4337,7 @@ function PulseBetaPageContent() {
         <ClusterDetailView
           cluster={selectedCluster}
           pulsesById={pulsesById}
+          events={events}
           onClose={() => setSelectedCluster(null)}
           onAcknowledge={acknowledgeCluster}
           onDismiss={dismissCluster}
