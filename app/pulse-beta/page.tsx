@@ -20,6 +20,11 @@ import {
 } from "@/lib/pulse_engine_v3";
 import { fetchTermContext } from "@/lib/terms";
 import {
+  deriveStudentStatus,
+  STATUS_STYLE as STUDENT_STATUS_STYLE,
+  type StudentStatus as StudentStatusValue,
+} from "@/lib/student_status";
+import {
   groupSessions,
   mergeAnalyses,
   isSettled,
@@ -3700,8 +3705,23 @@ function greetingForNow(): string {
 }
 
 // ── Student list item ─────────────────────────────────────────────────────────
-function StudentListItem({ pulse, isActive, onClick }: { pulse: StudentPulseV3; isActive: boolean; onClick: () => void }) {
+// Status chip is the new headline — workflow verb is what staff scan on. The
+// pulse score retreats to a small grey number after the status, keeping the
+// engine reading available without competing for attention. Severity is still
+// encoded via the leading dot colour and via the surrounding tier grouping.
+function StudentListItem({
+  pulse,
+  status,
+  isActive,
+  onClick,
+}: {
+  pulse:    StudentPulseV3;
+  status:   StudentStatusValue;
+  isActive: boolean;
+  onClick:  () => void;
+}) {
   const alert = ALERT[pulse.alert_level];
+  const st    = STUDENT_STATUS_STYLE[status];
 
   return (
     <button onClick={onClick}
@@ -3714,7 +3734,12 @@ function StudentListItem({ pulse, isActive, onClick }: { pulse: StudentPulseV3; 
         {pulse.re_emergence     && <span className="text-xs shrink-0 text-amber-600" title="Re-emergence">↩</span>}
         <span className="font-medium text-slate-700 text-sm truncate">{pulse.student_id}</span>
       </div>
-      <span className={`text-xs font-bold px-2 py-0.5 rounded-full shrink-0 ${alert.bg} ${alert.text}`}>
+      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${st.chip}`}
+            title={`Workflow status: ${st.label}`}>
+        {st.label}
+      </span>
+      <span className="text-[10px] text-slate-400 font-semibold shrink-0 w-6 text-right"
+            title={`Pulse score (alert band: ${pulse.alert_level})`}>
         {pulse.pulse_score}
       </span>
     </button>
@@ -3886,6 +3911,23 @@ function PulseBetaPageContent() {
     () => calculateAllPulsesV3(events, acks, analyses, termContext ?? undefined),
     [events, acks, analyses, termContext],
   );
+
+  // Workflow status per student. Derived once per pulses/acks/snoozes change
+  // so the list-item rows don't each re-derive on render. Same helper that
+  // drives the dashboard's Recent Safeguarding Events widget — both surfaces
+  // show the same verb-set for the same student.
+  const statusByStudent = useMemo(() => {
+    const map = new Map<string, StudentStatusValue>();
+    for (const p of pulses) {
+      map.set(p.student_id, deriveStudentStatus({
+        studentId:  p.student_id,
+        firstSeen:  p.first_seen,
+        acks,
+        snoozes,
+      }));
+    }
+    return map;
+  }, [pulses, acks, snoozes]);
 
   // Keep selection synced when pulses recompute (so re-emergence shows live after ack)
   useEffect(() => {
@@ -4299,6 +4341,7 @@ function PulseBetaPageContent() {
                     <StudentListItem
                       key={pulse.student_id}
                       pulse={pulse}
+                      status={statusByStudent.get(pulse.student_id) ?? "monitoring"}
                       isActive={selected?.student_id === pulse.student_id}
                       onClick={() => setSelected(pulse)}
                     />

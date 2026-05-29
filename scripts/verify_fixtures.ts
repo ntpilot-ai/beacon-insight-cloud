@@ -44,8 +44,16 @@ const MANIFEST: Record<string, IntendedBand> = {
     expectLayer3: true,
   },
   "david.mann": {
-    band: "high",
-    defends: "Substance category, moderate signals WITHOUT Layer 3 firing",
+    // Pre-Summer-ack this student defended the "high without Layer-3" path
+    // and landed at score 54. After adding a Summer 'monitored' ack (added
+    // to populate the Status column), the engine correctly dampens his
+    // urgency: pastoral has the case in hand, score drops below high.
+    // Status reads as "In Review", which is the right safeguarding
+    // outcome for an actively-monitored student. He still defends
+    // moderate-signals-without-Layer-3 — just now with the ack-aware
+    // pulse-score reduction also in play.
+    band: "medium",
+    defends: "Substance category, moderate signals, ack-aware dampening (monitored Summer)",
     expectLayer3: false,
   },
   "chloe.morrison": {

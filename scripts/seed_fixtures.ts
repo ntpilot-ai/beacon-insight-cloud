@@ -533,6 +533,80 @@ const SCENARIO_EVENTS: Record<string, SeedEvent[]> = {
 // shortly after by the OLD critical-rise rule. After the FIX2 +20-threshold
 // change these would no longer break, but they're preserved here as a
 // historical-display fixture, not as a current-behaviour test.
+
+// ── Current-term (Summer 2026) acknowledgements ──────────────────────────────
+// Populates the workflow-state palette for the dashboard's Recent Safeguarding
+// Events widget and the pulse-beta queue Status column. Without these, every
+// student renders as "Monitoring" because no Summer engagement exists in the
+// data (the ack-bounding engine fix correctly stops Spring acks from leaking
+// into Summer state). Mix designed for demo variety:
+//   - referred  → Status = Escalated  (aisha, tyler)
+//   - monitored → Status = In Review  (david, james, sophie)
+//   - none      → Status = Monitoring (chloe, emma, ryan)
+// Notes carry forward the per-student narrative — they should read as the
+// kind of case-note an actual DSL would write.
+interface RelAck {
+  offset:            number;
+  alert_level:       "critical" | "high" | "medium" | "low";
+  dominant_category: string;
+  action_taken:      "monitored" | "referred" | "escalated" | "no_action";
+  notes:             string;
+  acknowledged_by:   string;
+}
+
+const SUMMER_ACKS: Record<string, RelAck[]> = {
+  // Escalated — acute Summer pattern, referred to DSL
+  "aisha.rahman": [{
+    offset:            2 * DAY,
+    alert_level:       "high",
+    dominant_category: "Inappropriate Content",
+    action_taken:      "referred",
+    notes:             "Spring pattern has re-emerged with acute Summer spike across multiple platforms. " +
+                       "Escalated to DSL — parental contact made, device filters tightened, pastoral conversation booked for Friday.",
+    acknowledged_by:   "Mr Thompson (HoY 9)",
+  }],
+  // Escalated — cross-platform jailbreak suggests social distribution; routed to IT
+  "tyler.brooks": [{
+    offset:            1 * DAY,
+    alert_level:       "high",
+    dominant_category: "Jailbreak",
+    action_taken:      "referred",
+    notes:             "Cross-platform jailbreak attempts continue to escalate. Referred to Head of Computing — " +
+                       "investigating whether prompt template is being shared via Year 11 group chats.",
+    acknowledged_by:   "Mr Wright",
+  }],
+  // In Review — pastoral has it, monitoring continued substance curiosity
+  "david.mann": [{
+    offset:            3 * DAY,
+    alert_level:       "high",
+    dominant_category: "Substance",
+    action_taken:      "monitored",
+    notes:             "Pattern continued from Spring conversation. Brother situation referenced again — " +
+                       "checking with David's parents whether school counsellor involvement would help.",
+    acknowledged_by:   "Ms Hassan (Pastoral)",
+  }],
+  // In Review — form tutor following up on bullying pattern
+  "james.okafor": [{
+    offset:            4 * DAY,
+    alert_level:       "high",
+    dominant_category: "Bullying",
+    action_taken:      "monitored",
+    notes:             "Spring conversation didn't resolve the underlying conflict between James and the other boy. " +
+                       "Both spoken to again with parents notified. Monitoring for escalation.",
+    acknowledged_by:   "Mrs Williams",
+  }],
+  // In Review — pastoral check-in on wellbeing pattern
+  "sophie.chen": [{
+    offset:            5 * DAY,
+    alert_level:       "medium",
+    dominant_category: "Self-harm",
+    action_taken:      "monitored",
+    notes:             "Wellbeing patterns continue across the term. No direct disclosure yet but persistent low " +
+                       "mood signals warrant continued check-ins. Form tutor coordinating with pastoral on outreach.",
+    acknowledged_by:   "Ms Hassan (Pastoral)",
+  }],
+};
+
 interface SnoozeFixture {
   snoozed_offset: number;
   expires_offset: number;
@@ -689,6 +763,23 @@ async function main() {
     }));
     const { error } = await sb.from("beacon_events").insert(rows);
     console.log(`${error ? "✗" : "✓"} ${studentId.padEnd(20)} ${rows.length} Summer events ${error ? "ERR " + error.message : ""}`);
+  }
+
+  // ── SEED SUMMER 2026 ACKS (relative offsets) ──
+  console.log("\n--- Seed Summer 2026 acks (workflow state for Status column) ---");
+  for (const [studentId, acks] of Object.entries(SUMMER_ACKS)) {
+    const rows = acks.map(a => ({
+      school_id:         SCHOOL_ID,
+      student_id:        studentId,
+      acknowledged_by:   a.acknowledged_by,
+      acknowledged_at:   iso(a.offset),
+      alert_level:       a.alert_level,
+      dominant_category: a.dominant_category,
+      action_taken:      a.action_taken,
+      notes:             a.notes,
+    }));
+    const { error } = await sb.from("pulse_acknowledgements").insert(rows);
+    console.log(`${error ? "✗" : "✓"} ${studentId.padEnd(20)} ${rows.length} Summer ack${rows.length !== 1 ? "s" : ""} (${acks[0].action_taken}) ${error ? "ERR " + error.message : ""}`);
   }
 
   // ── SEED AISHA'S BROKEN SNOOZES ──

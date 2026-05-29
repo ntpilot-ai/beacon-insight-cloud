@@ -6,6 +6,7 @@ import { fetchAllEvents } from "@/lib/fetchEvents";
 import { useAuth } from "@/lib/useAuth";
 import { SCHOOL_ID, SCHOOL_NAME } from "@/lib/config";
 import { calculateAllPulses } from "@/lib/pulse_engine";
+import { deriveStudentStatus, STATUS_STYLE, type StudentStatus } from "@/lib/student_status";
 import Sidebar from "@/components/Sidebar";
 import BeaconIntelligence from "@/components/AISummary";
 import Link from "next/link";
@@ -43,15 +44,46 @@ const TERMS = [
   { label: "All Time",         start: "2000-01-01", end: "2099-12-31" },
 ];
 
-function getCurrentTerm(): string {
-  const now = new Date();
-  const current = TERMS.find(t => {
-    const s = new Date(t.start);
-    const e = new Date(t.end);
-    e.setHours(23, 59, 59);
-    return now >= s && now <= e && t.label !== "All Time";
-  });
-  return current?.label ?? "All Time";
+type Period = "7d" | "term" | "year";
+
+const PERIOD_LABELS: Record<Period, string> = {
+  "7d":   "7 Days",
+  term:   "This Term",
+  year:   "Academic Year",
+};
+
+function getPeriodRange(period: Period, now: Date = new Date()): { start: Date; end: Date } {
+  if (period === "7d") {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - 6);
+    return { start, end: now };
+  }
+  if (period === "term") {
+    const current = TERMS.find(t => {
+      if (t.label === "All Time") return false;
+      const s = new Date(t.start);
+      const e = new Date(t.end);
+      e.setHours(23, 59, 59);
+      return now >= s && now <= e;
+    });
+    if (current) {
+      const e = new Date(current.end);
+      e.setHours(23, 59, 59);
+      return { start: new Date(current.start), end: e };
+    }
+    // Between-term fallback: nearest 90 days
+    const start = new Date(now);
+    start.setDate(start.getDate() - 90);
+    return { start, end: now };
+  }
+  // Academic year: Sep 1 → Aug 31, anchored on the autumn-term start year
+  const month = now.getMonth();
+  const startYear = month >= 8 ? now.getFullYear() : now.getFullYear() - 1;
+  const start = new Date(startYear, 8, 1);
+  const end = new Date(startYear + 1, 7, 31);
+  end.setHours(23, 59, 59);
+  return { start, end };
 }
 
 const RISK_STYLE: Record<string, { dot: string; text: string; bg: string }> = {
@@ -92,6 +124,202 @@ const ACK_ACTION_BADGE: Record<string, { label: string; cls: string }> = {
   escalated: { label: "Escalated",  cls: "bg-red-100 text-red-700"       },
   no_action: { label: "Reviewed",   cls: "bg-slate-100 text-slate-600"   },
 };
+
+// ── Recent Safeguarding Events widget (beta-only, Phase 4.5) ─────────────────
+// Simplified top-layer triage view, modelled on the original concept-deck
+// table. Answers "what's on my list to action today?" with the verb-set a
+// DSL actually uses: Status (Escalated / In Review / Monitoring / New),
+// with severity as a secondary signal rather than the headline.
+//
+// Sits ABOVE the more verbose TodayPanel — they're intentionally side-by-
+// side during this iteration so we can see which one staff actually use.
+// TodayPanel may be retired if this widget covers the use case.
+//
+// Beta-only: the project's A/B convention is to iterate on dashboard-beta
+// first, then promote to release (app/page.tsx) once the shape is settled.
+
+const SEVERITY_DOT: Record<string, string> = {
+  critical: "bg-indigo-500",
+  high:     "bg-red-500",
+  medium:   "bg-amber-500",
+  low:      "bg-emerald-500",
+};
+const SEVERITY_LABEL: Record<string, string> = {
+  critical: "Critical",
+  high:     "High",
+  medium:   "Medium",
+  low:      "Low",
+};
+
+interface RecentEventRow {
+  studentId:  string;
+  category:   string;
+  severity:   string;
+  status:     StudentStatus;
+  lastSeen:   string;
+  pulseScore: number;
+}
+
+function RecentSafeguardingEvents({
+  events,
+  pulses,
+  acks,
+  snoozes,
+  maxRows = 8,
+}: {
+  events:  BeaconEvent[];
+  pulses:  any[];
+  acks:    DashboardAck[];
+  snoozes: DashboardSnooze[];
+  maxRows?: number;
+}) {
+  // One row per student with flagged activity in the last 7 days. Severity
+  // = current pulse alert_level (which already factors in trend + recency).
+  // Category = dominant category from their last 14 days of flagged events.
+  // Status = derived from acks + snoozes via the shared helper.
+  const rows: RecentEventRow[] = useMemo(() => {
+    const cutoff = Date.now() - 7 * 86400000;
+    const recentFlagged = events.filter(e =>
+      new Date(e.created_at).getTime() >= cutoff &&
+      (e.risk === "high" || e.risk === "critical" || e.risk === "medium" || e.blocked),
+    );
+
+    const byStudent: Record<string, BeaconEvent[]> = {};
+    recentFlagged.forEach(e => {
+      if (!byStudent[e.student_id]) byStudent[e.student_id] = [];
+      byStudent[e.student_id].push(e);
+    });
+
+    return Object.keys(byStudent).map(studentId => {
+      const studentEvents = byStudent[studentId];
+      const pulse         = pulses.find(p => p.student_id === studentId);
+
+      // Dominant category: most frequent across this student's flagged events.
+      const catCounts: Record<string, number> = {};
+      studentEvents.forEach(e => {
+        const c = categoryFromMatched(e.matched);
+        if (c !== "General") catCounts[c] = (catCounts[c] || 0) + 1;
+      });
+      const category = Object.entries(catCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "General";
+
+      const severity = pulse?.alert_level ?? "medium";
+      const status   = deriveStudentStatus({
+        studentId,
+        firstSeen: pulse?.first_seen,
+        acks,
+        snoozes,
+      });
+
+      const lastSeen = studentEvents.reduce(
+        (latest, e) => new Date(e.created_at).getTime() > new Date(latest).getTime() ? e.created_at : latest,
+        studentEvents[0].created_at,
+      );
+
+      return {
+        studentId,
+        category,
+        severity,
+        status,
+        lastSeen,
+        pulseScore: pulse?.pulse_score ?? 0,
+      };
+    })
+    // Sort by status weight (escalated first), then severity, then pulse score
+    .sort((a, b) => {
+      const statusOrder: Record<StudentStatus, number> = {
+        escalated: 0, in_review: 1, new: 2, monitoring: 3, closed: 4,
+      };
+      if (statusOrder[a.status] !== statusOrder[b.status]) {
+        return statusOrder[a.status] - statusOrder[b.status];
+      }
+      const sevOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+      if (sevOrder[a.severity] !== sevOrder[b.severity]) {
+        return (sevOrder[a.severity] ?? 4) - (sevOrder[b.severity] ?? 4);
+      }
+      return b.pulseScore - a.pulseScore;
+    });
+  }, [events, pulses, acks, snoozes]);
+
+  const visible = rows.slice(0, maxRows);
+  const hidden  = Math.max(0, rows.length - visible.length);
+
+  if (rows.length === 0) {
+    return (
+      <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6">
+        <h2 className="font-bold text-slate-800">Recent Safeguarding Events</h2>
+        <p className="text-xs text-slate-400 mt-0.5 mb-4">AI-flagged incidents requiring review or follow-up</p>
+        <div className="text-center text-sm text-slate-400 py-4">
+          No flagged activity in the last 7 days.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+      <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+        <div>
+          <h2 className="font-bold text-slate-800">Recent Safeguarding Events</h2>
+          <p className="text-xs text-slate-400 mt-0.5">AI-flagged incidents requiring review or follow-up</p>
+        </div>
+        <Link
+          href="/pulse-beta"
+          className="text-xs font-semibold text-[#06B6D4] hover:underline whitespace-nowrap"
+        >
+          View all events →
+        </Link>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50/60">
+            <tr className="text-left text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+              <th className="px-6 py-2.5">Student</th>
+              <th className="px-3 py-2.5">Category</th>
+              <th className="px-3 py-2.5">Severity</th>
+              <th className="px-6 py-2.5">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {visible.map(row => {
+              const sev = STATUS_STYLE[row.status];
+              return (
+                <tr key={row.studentId} className="hover:bg-slate-50/60 transition-colors">
+                  <td className="px-6 py-3">
+                    <Link
+                      href={`/pulse-beta?student=${encodeURIComponent(row.studentId)}`}
+                      className="font-semibold text-slate-700 hover:text-[#06B6D4] transition-colors"
+                    >
+                      {row.studentId}
+                    </Link>
+                  </td>
+                  <td className="px-3 py-3 text-slate-600">{row.category}</td>
+                  <td className="px-3 py-3">
+                    <span className="inline-flex items-center gap-2 text-slate-600">
+                      <span className={`w-2 h-2 rounded-full ${SEVERITY_DOT[row.severity] ?? SEVERITY_DOT.medium}`} />
+                      {SEVERITY_LABEL[row.severity] ?? row.severity}
+                    </span>
+                  </td>
+                  <td className="px-6 py-3">
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${sev.chip}`}>
+                      {sev.label}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {hidden > 0 && (
+        <div className="px-6 py-2.5 border-t border-slate-100 bg-slate-50/60 text-[11px] text-slate-500">
+          + {hidden} more {hidden === 1 ? "student" : "students"} with flagged activity this week
+        </div>
+      )}
+    </div>
+  );
+}
 
 function TodayPanel({
   events,
@@ -248,18 +476,13 @@ function TodayPanel({
   );
 }
 
-function OverviewSection({ events, term, setTerm }: {
-  events: BeaconEvent[]; term: string; setTerm: (t: string) => void;
+function OverviewSection({ events, period, setPeriod, range }: {
+  events: BeaconEvent[];
+  period: Period;
+  setPeriod: (p: Period) => void;
+  range: { start: Date; end: Date };
 }) {
-  const [open, setOpen] = useState(false);
-
-  const trendAnchor = useMemo(() => {
-    const t = TERMS.find(t => t.label === term) ?? TERMS[0];
-    const termEnd = new Date(t.end);
-    termEnd.setHours(23, 59, 59);
-    const now = new Date();
-    return termEnd < now ? termEnd : now;
-  }, [term]);
+  const [open, setOpen] = useState(true);
 
   const total    = events.length;
   const high     = events.filter(e => e.risk === "high" || e.risk === "critical").length;
@@ -273,23 +496,37 @@ function OverviewSection({ events, term, setTerm }: {
 
   return (
     <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="w-full px-6 py-4 flex items-center justify-between hover:bg-slate-50 transition-colors"
-      >
+      <div className="w-full px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <span className="font-semibold text-slate-700">Term Overview</span>
-          <select
-            value={term}
-            onChange={e => { e.stopPropagation(); setTerm(e.target.value); }}
-            onClick={e => e.stopPropagation()}
-            className="text-xs border border-slate-200 rounded-lg px-2 py-1 text-slate-500 bg-white focus:outline-none"
+          <button
+            onClick={() => setOpen(o => !o)}
+            className="font-semibold text-slate-700 hover:text-slate-900 transition-colors"
           >
-            {TERMS.map(t => <option key={t.label} value={t.label}>{t.label}</option>)}
-          </select>
+            Term Overview
+          </button>
+          <div className="flex gap-1 bg-slate-100 rounded-full p-1">
+            {(Object.keys(PERIOD_LABELS) as Period[]).map(p => (
+              <button
+                key={p}
+                onClick={() => setPeriod(p)}
+                className={`px-3 py-1 rounded-full text-xs font-semibold transition-all ${
+                  period === p
+                    ? "bg-[#06B6D4] text-white shadow-sm"
+                    : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                {PERIOD_LABELS[p]}
+              </button>
+            ))}
+          </div>
         </div>
-        <span className="text-slate-400 text-sm">{open ? "▲ Hide" : "▼ Show details"}</span>
-      </button>
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="text-slate-400 text-sm hover:text-slate-600 transition-colors"
+        >
+          {open ? "▲ Hide" : "▼ Show details"}
+        </button>
+      </div>
 
       {open && (
         <div className="px-6 pb-6 border-t border-slate-100">
@@ -310,7 +547,7 @@ function OverviewSection({ events, term, setTerm }: {
 
           <div className="mb-6">
             <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Activity Trend</div>
-            <TrendLine events={events} anchor={trendAnchor} />
+            <TrendLine events={events} range={range} />
           </div>
 
           <div className="grid grid-cols-2 gap-6">
@@ -365,7 +602,7 @@ export default function DashboardBeta() {
   const [events, setEvents]   = useState<BeaconEvent[]>([]);
   const [acks, setAcks]       = useState<DashboardAck[]>([]);
   const [snoozes, setSnoozes] = useState<DashboardSnooze[]>([]);
-  const [term, setTerm]       = useState(getCurrentTerm);
+  const [period, setPeriod]   = useState<Period>("term");
   const [live, setLive]       = useState(true);
 
   async function loadEvents() {
@@ -403,12 +640,14 @@ export default function DashboardBeta() {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
+  const range = useMemo(() => getPeriodRange(period), [period]);
+
   const filteredEvents = useMemo(() => {
-    const t = TERMS.find(t => t.label === term) ?? TERMS[0];
-    const s = new Date(t.start), e = new Date(t.end);
-    e.setHours(23, 59, 59);
-    return events.filter(ev => { const d = new Date(ev.created_at); return d >= s && d <= e; });
-  }, [events, term]);
+    return events.filter(ev => {
+      const d = new Date(ev.created_at);
+      return d >= range.start && d <= range.end;
+    });
+  }, [events, range]);
 
   const pulses = useMemo(() => calculateAllPulses(events), [events]);
 
@@ -465,7 +704,7 @@ export default function DashboardBeta() {
 
           <div className="grid grid-cols-3 gap-5">
             <KPICard
-              label="Total Prompts This Term"
+              label={`Total Prompts · ${PERIOD_LABELS[period]}`}
               value={totalPrompts.toLocaleString()}
               sub={`Across all monitored AI platforms`}
               color="#06B6D4"
@@ -485,9 +724,18 @@ export default function DashboardBeta() {
             />
           </div>
 
+          {/* TodayPanel leads — it's the per-event "what's happened in the
+              last 24h" view and surfaces the most-urgent recent activity at
+              row level. */}
           <TodayPanel events={events} pulses={pulses} acks={acks} snoozes={snoozes} />
 
-          <OverviewSection events={filteredEvents} term={term} setTerm={setTerm} />
+          {/* Recent Safeguarding Events sits below — concept-deck-style table
+              with workflow Status as the primary verb. Provides the
+              caseload-level read across the last 7 days, complementing
+              TodayPanel's tighter 24h focus. */}
+          <RecentSafeguardingEvents events={events} pulses={pulses} acks={acks} snoozes={snoozes} />
+
+          <OverviewSection events={filteredEvents} period={period} setPeriod={setPeriod} range={range} />
 
         </main>
       </div>
