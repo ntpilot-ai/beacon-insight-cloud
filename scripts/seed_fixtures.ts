@@ -68,6 +68,23 @@ function iso(offsetMsAgo: number): string {
   return new Date(Date.now() - offsetMsAgo).toISOString();
 }
 
+// Canonical Aegis category derivation — MUST stay character- and order-for-
+// order identical to app/api/chat/route.ts categoryFromMatched and the
+// 0017 backfill CASE (first-match-wins). Seeded events carry this directly
+// on the `category` column so they look exactly like live-classified events;
+// without it, fresh inserts have null category and read as "general".
+function categoryFromMatched(matched: string[]): string {
+  if (!matched.length) return "general";
+  const m = matched.join(" ").toLowerCase();
+  if (/jailbreak|ignore|dan|bypass/.test(m))   return "jailbreak";
+  if (/harm|suicide|hurt/.test(m))             return "self_harm";
+  if (/bully|threaten/.test(m))                return "bullying";
+  if (/weapon|violen|shank|stab/.test(m))      return "violence";
+  if (/sex|explicit|adult|porn|nude/.test(m))  return "inappropriate_content";
+  if (/drug|alcohol|weed|coke/.test(m))        return "substance";
+  return "general";
+}
+
 // ── Platforms ────────────────────────────────────────────────────────────────
 // Match the extension's content_scripts match list (extension/manifest.json).
 // Including platforms the extension doesn't actually capture would imply
@@ -239,7 +256,7 @@ const AUTUMN_ACKS: Record<string, AbsAck[]> = {
     {
       acknowledged_at:   "2025-11-13T16:00:00Z",
       alert_level:       "medium",
-      dominant_category: "Inappropriate Content",
+      dominant_category: "inappropriate_content",
       action_taken:      "monitored",
       notes:             "Form tutor conversation — Aisha said she was 'just curious about what older girls do'. Will monitor, no parental contact at this stage.",
       acknowledged_by:   "Ms Brennan",
@@ -368,7 +385,7 @@ const SPRING_ACKS: Record<string, AbsAck[]> = {
     {
       acknowledged_at:   "2026-02-13T15:00:00Z",
       alert_level:       "high",
-      dominant_category: "Inappropriate Content",
+      dominant_category: "inappropriate_content",
       action_taken:      "referred",
       notes:             "Referred to DSL after February cluster. Parental contact made — mother is aware. Filters tightened on her device, conversation with form tutor scheduled for Monday.",
       acknowledged_by:   "Mr Thompson (HoY 9)",
@@ -376,7 +393,7 @@ const SPRING_ACKS: Record<string, AbsAck[]> = {
     {
       acknowledged_at:   "2026-03-15T15:00:00Z",
       alert_level:       "high",
-      dominant_category: "Inappropriate Content",
+      dominant_category: "inappropriate_content",
       action_taken:      "monitored",
       notes:             "Pattern returned after half-term. Followed up with Aisha — she mentioned an older online contact on Roblox. Pastoral lead flagged the Roblox detail as concerning. Monitoring, second DSL discussion this week.",
       acknowledged_by:   "Ms Hassan (Pastoral)",
@@ -388,7 +405,7 @@ const SPRING_ACKS: Record<string, AbsAck[]> = {
     {
       acknowledged_at:   "2026-02-20T14:30:00Z",
       alert_level:       "medium",
-      dominant_category: "Jailbreak",
+      dominant_category: "jailbreak",
       action_taken:      "monitored",
       notes:             "Tyler tried to bypass the AI's content policy three times in early Feb. Spoke to him in tutor — said his friends had shared the prompts. No further attempts since. Monitoring.",
       acknowledged_by:   "Mr Wright",
@@ -399,7 +416,7 @@ const SPRING_ACKS: Record<string, AbsAck[]> = {
     {
       acknowledged_at:   "2026-03-13T16:15:00Z",
       alert_level:       "medium",
-      dominant_category: "Substance",
+      dominant_category: "substance",
       action_taken:      "monitored",
       notes:             "Pattern of substance-related questions across Feb/March. Spoke to David — he says he's curious because his older brother has been struggling. Not asking for himself per his account. Monitoring, will revisit if anything direct.",
       acknowledged_by:   "Ms Hassan (Pastoral)",
@@ -411,7 +428,7 @@ const SPRING_ACKS: Record<string, AbsAck[]> = {
     {
       acknowledged_at:   "2026-02-27T15:30:00Z",
       alert_level:       "medium",
-      dominant_category: "Bullying",
+      dominant_category: "bullying",
       action_taken:      "monitored",
       notes:             "James asking about fake accounts and how to embarrass another student. Spoken to him — admitted there's tension with another boy in form. No specific target named. Tutor conversation booked with both boys for next week.",
       acknowledged_by:   "Mrs Williams",
@@ -424,7 +441,7 @@ const SPRING_ACKS: Record<string, AbsAck[]> = {
     {
       acknowledged_at:   "2026-02-14T10:30:00Z",
       alert_level:       "high",
-      dominant_category: "Self-harm",
+      dominant_category: "self_harm",
       action_taken:      "monitored",
       notes:             "Brief confiding pattern late Feb across three evenings — language reads as low mood / dissociation, not active crisis. Spoke with Harriet at form time, she mentioned struggling with sleep and exam pressure. Parents notified, weekly check-ins agreed. School counsellor flagged as possible referral if pattern recurs.",
       acknowledged_by:   "Ms Hassan (Pastoral)",
@@ -648,7 +665,7 @@ const SUMMER_ACKS: Record<string, RelAck[]> = {
   "aisha.rahman": [{
     offset:            2 * DAY,
     alert_level:       "high",
-    dominant_category: "Inappropriate Content",
+    dominant_category: "inappropriate_content",
     action_taken:      "referred",
     notes:             "Spring pattern has re-emerged with acute Summer spike across multiple platforms. " +
                        "Escalated to DSL — parental contact made, device filters tightened, pastoral conversation booked for Friday.",
@@ -658,7 +675,7 @@ const SUMMER_ACKS: Record<string, RelAck[]> = {
   "tyler.brooks": [{
     offset:            1 * DAY,
     alert_level:       "high",
-    dominant_category: "Jailbreak",
+    dominant_category: "jailbreak",
     action_taken:      "referred",
     notes:             "Cross-platform jailbreak attempts continue to escalate. Referred to Head of Computing — " +
                        "investigating whether prompt template is being shared via Year 11 group chats.",
@@ -668,7 +685,7 @@ const SUMMER_ACKS: Record<string, RelAck[]> = {
   "david.mann": [{
     offset:            3 * DAY,
     alert_level:       "high",
-    dominant_category: "Substance",
+    dominant_category: "substance",
     action_taken:      "monitored",
     notes:             "Pattern continued from Spring conversation. Brother situation referenced again — " +
                        "checking with David's parents whether school counsellor involvement would help.",
@@ -678,7 +695,7 @@ const SUMMER_ACKS: Record<string, RelAck[]> = {
   "james.okafor": [{
     offset:            4 * DAY,
     alert_level:       "high",
-    dominant_category: "Bullying",
+    dominant_category: "bullying",
     action_taken:      "monitored",
     notes:             "Spring conversation didn't resolve the underlying conflict between James and the other boy. " +
                        "Both spoken to again with parents notified. Monitoring for escalation.",
@@ -688,7 +705,7 @@ const SUMMER_ACKS: Record<string, RelAck[]> = {
   "sophie.chen": [{
     offset:            5 * DAY,
     alert_level:       "medium",
-    dominant_category: "Self-harm",
+    dominant_category: "self_harm",
     action_taken:      "monitored",
     notes:             "Wellbeing patterns continue across the term. No direct disclosure yet but persistent low " +
                        "mood signals warrant continued check-ins. Form tutor coordinating with pastoral on outreach.",
@@ -782,6 +799,8 @@ async function main() {
       risk:       e.risk,
       blocked:    e.blocked ?? false,
       matched:    e.matched ?? [],
+      category:   categoryFromMatched(e.matched ?? []),
+      risk_source: "keyword",
       created_at: e.iso,
     }));
     const { error } = await sb.from("beacon_events").insert(rows);
@@ -815,6 +834,8 @@ async function main() {
       risk:       e.risk,
       blocked:    e.blocked ?? false,
       matched:    e.matched ?? [],
+      category:   categoryFromMatched(e.matched ?? []),
+      risk_source: "keyword",
       created_at: e.iso,
     }));
     const { error } = await sb.from("beacon_events").insert(rows);
@@ -848,6 +869,8 @@ async function main() {
       risk:       e.risk,
       blocked:    e.blocked ?? false,
       matched:    e.matched ?? [],
+      category:   categoryFromMatched(e.matched ?? []),
+      risk_source: "keyword",
       created_at: iso(e.offset),
     }));
     const { error } = await sb.from("beacon_events").insert(rows);

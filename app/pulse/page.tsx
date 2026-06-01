@@ -17,6 +17,7 @@ import {
   type TermContext,
 } from "@/lib/pulse_engine_v3";
 import { fetchTermContext } from "@/lib/terms";
+import { categoryLabel, categoryColor } from "@/lib/categories";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 
@@ -39,16 +40,6 @@ const SHAPE_ICON: Record<string, string> = {
   chronic:       "⚠️",
   improving:     "📉",
   normal:        "✓",
-};
-
-const CAT_COLOR: Record<string, string> = {
-  "Self-harm":             "#DC2626",
-  "Violence":              "#B45309",
-  "Jailbreak":             "#7C3AED",
-  "Inappropriate Content": "#DB2777",
-  "Substance":             "#D97706",
-  "Bullying":              "#0369A1",
-  "General":               "#64748b",
 };
 
 const RISK_GROUP_CONFIG = {
@@ -391,8 +382,8 @@ function StudentDetail({
           <div className="flex items-center gap-x-3 gap-y-2 flex-wrap mt-3">
             {pulse.categories.map(cat => (
               <div key={cat.name} className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-white text-[11px] font-bold"
-                style={{ background: CAT_COLOR[cat.name] || "#64748b" }}>
-                {cat.name}
+                style={{ background: categoryColor(cat.name) }}>
+                {categoryLabel(cat.name)}
                 <span className="bg-white/20 px-1.5 rounded-full">{cat.count}</span>
               </div>
             ))}
@@ -412,7 +403,7 @@ function StudentDetail({
           <div className="mt-3 flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
             <span className="text-amber-600 font-bold">↩</span>
             <div className="text-xs text-amber-800">
-              <span className="font-bold">Pattern returned</span> — “{pulse.last_acknowledged.dominant_category}”
+              <span className="font-bold">Pattern returned</span> — “{categoryLabel(pulse.last_acknowledged.dominant_category)}”
               has resurfaced since acknowledgement on {dateShort(pulse.last_acknowledged.acknowledged_at)}.
             </div>
           </div>
@@ -479,7 +470,7 @@ function StudentDetail({
               <div className="mt-3 pt-3 border-t border-slate-200 text-[10px] text-slate-400">
                 Baseline {pulse.fingerprint.baseline_score} · {pulse.fingerprint.pattern}
                 {pulse.fingerprint.dominant_categories.length > 0 && (
-                  <span> · {pulse.fingerprint.dominant_categories.join(", ")}</span>
+                  <span> · {pulse.fingerprint.dominant_categories.map(categoryLabel).join(", ")}</span>
                 )}
               </div>
             )}

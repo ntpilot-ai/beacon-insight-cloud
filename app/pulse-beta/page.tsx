@@ -41,6 +41,7 @@ import {
   type SnoozeDuration,
 } from "@/lib/snooze";
 import { buildWeeklySummary, type WeeklySummary } from "@/lib/weekly_summary";
+import { categoryLabel } from "@/lib/categories";
 import { FEEDBACK_REASONS, type FeedbackReason, type PulseFeedback } from "@/lib/feedback";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, Legend } from "recharts";
 
@@ -64,16 +65,6 @@ const SHAPE_ICON: Record<string, string> = {
   chronic:       "⚠️",
   improving:     "📉",
   normal:        "✓",
-};
-
-const CAT_COLOR: Record<string, string> = {
-  "Self-harm":             "#DC2626",
-  "Violence":              "#B45309",
-  "Jailbreak":             "#7C3AED",
-  "Inappropriate Content": "#DB2777",
-  "Substance":             "#D97706",
-  "Bullying":              "#0369A1",
-  "General":               "#64748b",
 };
 
 const RISK_GROUP_CONFIG = {
@@ -1173,7 +1164,7 @@ function ReturningPatternRow({
   let headlineBody:  string;
   if (mode === "within-term") {
     headlineLabel = "Pattern returned";
-    headlineBody  = `“${pulse.last_acknowledged!.dominant_category}” resurfaced since acknowledgement on ${dateShort(pulse.last_acknowledged!.acknowledged_at)}`;
+    headlineBody  = `“${categoryLabel(pulse.last_acknowledged!.dominant_category)}” resurfaced since acknowledgement on ${dateShort(pulse.last_acknowledged!.acknowledged_at)}`;
   } else if (mode === "carry-over") {
     const peakWord = snapshot!.peak_alert_level;
     const acks     = snapshot!.ack_count;
@@ -1265,7 +1256,7 @@ function PreviousTermDetail({ snapshot, term }: { snapshot: PulseTermSnapshot; t
       <DetailLine label="Total events">{snapshot.total_events} ({snapshot.flagged_events} flagged)</DetailLine>
       <DetailLine label="Dominant categories">
         {snapshot.dominant_categories.length > 0
-          ? snapshot.dominant_categories.join(", ")
+          ? snapshot.dominant_categories.map(categoryLabel).join(", ")
           : <span className="text-slate-400">none</span>}
       </DetailLine>
 
@@ -1313,7 +1304,7 @@ function PreviousTermRow({
   const finalChip  = ALERT[snapshot.final_alert_level === "normal" ? "low" : snapshot.final_alert_level] ?? ALERT.low;
   const referrals  = snapshot.referral_count;
   const acks       = snapshot.ack_count;
-  const cats       = snapshot.dominant_categories.slice(0, 2).join(", "); // header gets top 2; expand shows all
+  const cats       = snapshot.dominant_categories.slice(0, 2).map(categoryLabel).join(", "); // header gets top 2; expand shows all
   const trajLabel  = trajectoryLabel(snapshot.trajectory);
 
   return (
@@ -1391,7 +1382,7 @@ function PreviousTermRow({
           <DetailLine label="Total events">{snapshot.total_events} ({snapshot.flagged_events} flagged)</DetailLine>
           <DetailLine label="Dominant categories">
             {snapshot.dominant_categories.length > 0
-              ? snapshot.dominant_categories.join(", ")
+              ? snapshot.dominant_categories.map(categoryLabel).join(", ")
               : <span className="text-slate-400">none</span>}
           </DetailLine>
 
@@ -1490,7 +1481,7 @@ function StudentDetail({
       : pulse.fingerprint.pattern === "improving" ? "Improving pattern"
       :                                              "Established pattern",
         pulse.fingerprint.dominant_categories.length > 0
-          ? `· ${pulse.fingerprint.dominant_categories.join(", ")}`
+          ? `· ${pulse.fingerprint.dominant_categories.map(categoryLabel).join(", ")}`
           : "",
         `· baseline ${pulse.fingerprint.baseline_score}`,
       ].join(" ").trim()
@@ -2332,7 +2323,7 @@ function TriageCard({
           )}
           {cats.map(c => (
             <span key={c.name} className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">
-              {c.name}
+              {categoryLabel(c.name)}
             </span>
           ))}
           {clusterEntry && (
@@ -2579,7 +2570,7 @@ function WeeklySummaryCard({
                 : <div className="flex items-center gap-2 flex-wrap">
                     {summary.top_categories.map(c => (
                       <span key={c.name} className="text-[11px] px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-600">
-                        {c.name} · <span className="font-bold text-slate-700">{c.count}</span>
+                        {categoryLabel(c.name)} · <span className="font-bold text-slate-700">{c.count}</span>
                       </span>
                     ))}
                   </div>

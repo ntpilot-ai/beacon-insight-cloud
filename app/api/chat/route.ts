@@ -13,15 +13,23 @@ console.log("BeaconChat API init — Service key:", process.env.SUPABASE_SERVICE
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY!;
 
-// ── Risk keywords (mirrors Atlas policies) ────────────────────────────────────
-const HIGH_RISK = [
-  "kill","bomb","suicide","terrorist","nazi","school shooting","drugs",
-  "ignore previous instructions","ignore all instructions","pretend you have no limits",
-  "pretend you have no restrictions","act as dan","jailbreak","do anything now",
-  "bypass your filters","you are now unrestricted","developer mode",
-  "disregard your training","you have no rules",
+// ── Hard floor — always enforced, cannot be disabled by a school ─────────────
+// These 18 keywords stay hardcoded as a safety net even when a school turns
+// off use_beacon_defaults. Six critical safeguarding terms + 12 jailbreak
+// phrases. Everything else (drugs slang, profanity, sexual content, etc.)
+// lives in beacon_default_policies and is toggleable per school.
+const BEACON_HARDFLOOR_HIGH: string[] = [
+  // Critical safeguarding
+  "kill", "bomb", "suicide", "terrorist", "school shooting", "nazi",
+  // Jailbreak phrases (also surfaced in Atlas UI under "cannot be disabled")
+  "ignore previous instructions", "ignore all instructions",
+  "pretend you have no limits", "pretend you have no restrictions",
+  "act as dan", "jailbreak", "do anything now", "bypass your filters",
+  "you are now unrestricted", "developer mode",
+  "disregard your training", "you have no rules",
 ];
-const MEDIUM_RISK = ["violence","weapon","hate","weed","bully","explicit","self harm","sex","porn","adult","nudes","sexting","drugs","alcohol","shank","stab"];
+
+type KeywordSet = { high: string[]; medium: string[] };
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -31,33 +39,41 @@ function matchesWord(text: string, keyword: string): boolean {
   return new RegExp(`\\b${escapeRegex(keyword)}\\b`, "i").test(text);
 }
 
-function assessRisk(text: string): { risk: string; matched: string[]; blocked: boolean } {
-  const highMatches = HIGH_RISK.filter(w => matchesWord(text, w));
+// Single-pass risk assessment against the fully merged keyword set
+// (hard floor + Beacon defaults (if enabled) + school additions).
+// Same semantics as before: any high → blocked; otherwise any medium → flagged.
+function assessRisk(text: string, keywords: KeywordSet): { risk: string; matched: string[]; blocked: boolean } {
+  const highMatches = keywords.high.filter(w => matchesWord(text, w));
   if (highMatches.length) return { risk: "high", matched: highMatches, blocked: true };
-  const medMatches = MEDIUM_RISK.filter(w => matchesWord(text, w));
+  const medMatches = keywords.medium.filter(w => matchesWord(text, w));
   if (medMatches.length) return { risk: "medium", matched: medMatches, blocked: false };
   return { risk: "low", matched: [], blocked: false };
 }
 
+// IMPORTANT: kept character-for-character and order-for-order identical to the
+// backfill CASE in supabase/sql/0017_beacon_events_aegis_signal.sql. Both are
+// first-match-wins; if they diverge, a prompt matching more than one bucket
+// gets categorised one way in history (backfill) and another way live.
 function categoryFromMatched(matched: string[]): string {
   if (!matched.length) return "general";
   const m = matched.join(" ").toLowerCase();
-  if (m.includes("harm") || m.includes("suicide")) return "self_harm";
-  if (m.includes("bully") || m.includes("threaten")) return "bullying";
-  if (m.includes("weapon") || m.includes("violen")) return "violence";
-  if (m.includes("jailbreak") || m.includes("ignore") || m.includes("dan") || m.includes("bypass")) return "jailbreak";
-  if (m.includes("drug") || m.includes("weed")) return "substance";
+  if (/jailbreak|ignore|dan|bypass/.test(m))   return "jailbreak";
+  if (/harm|suicide|hurt/.test(m))             return "self_harm";
+  if (/bully|threaten/.test(m))                return "bullying";
+  if (/weapon|violen|shank|stab/.test(m))      return "violence";
+  if (/sex|explicit|adult|porn|nude/.test(m))  return "inappropriate_content";
+  if (/drug|alcohol|weed|coke/.test(m))        return "substance";
   return "general";
 }
 
-// ── Beacon system prompt ──────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are BeaconChat, a safe and helpful AI assistant for students in a school environment.
+// ── Horizon system prompt ─────────────────────────────────────────────────────
+const SYSTEM_PROMPT = `You are the AI inside Horizon, a safe AI workspace for students in a school environment. Horizon is a tool, not a character — do not introduce yourself with a name, persona, or feelings. If a student asks who you are, say you are the AI inside their Horizon workspace.
 
 Your role:
 - Help students learn, research, and understand topics
 - Assist with homework, essays, and academic questions
 - Encourage critical thinking rather than just providing answers
-- Be friendly, clear, and age-appropriate in your responses
+- Be clear, warm and age-appropriate in your responses
 
 Important guidelines:
 - Never help with anything harmful, illegal, or inappropriate
@@ -70,46 +86,91 @@ Important guidelines:
 - Never be sarcastic, knowing, or winking in tone — always remain neutral, calm and professional
 - If a student asks the same question repeatedly, answer it clearly each time without remarking on the repetition
 - Do not make assumptions about why a student is asking something
+- Do not develop or claim a personality, name, or feelings; do not say things like "I missed you" or "I enjoyed our chat"
 
 You are being used in a school context where all conversations are monitored for safeguarding purposes.`;
 
+// Slug → context sentence for school religious character. Mirrors the dropdown
+// in app/atlas/page.tsx; slugs are the cross-component contract.
+const AFFILIATION_CONTEXT: Record<string, string> = {
+  none:            "This is a non-denominational school with no specific religious character.",
+  cofe:            "This is a Church of England school. Anglican Christian values shape the school's ethos and worship.",
+  catholic:        "This is a Roman Catholic school. Catholic teaching shapes the school's ethos, worship, and pastoral care.",
+  christian_other: "This is a Christian school. Christian values shape the school's ethos and worship.",
+  jewish:          "This is a Jewish school. Jewish faith and tradition shape the school's ethos, worship, and calendar.",
+  muslim:          "This is a Muslim school. Islamic faith and tradition shape the school's ethos, worship, and calendar.",
+  sikh:            "This is a Sikh school. Sikh faith and tradition shape the school's ethos, worship, and calendar.",
+  hindu:           "This is a Hindu school. Hindu faith and tradition shape the school's ethos, worship, and calendar.",
+  multi_faith:     "This is a multi-faith school. Students of different faiths and none are part of the school community, and the school values respect across traditions.",
+  other:           "This school has a specific religious character. Respect the school's faith ethos in your responses where relevant.",
+};
+
+const QUIZ_SUPPLEMENT = `
+## QUIZ MODE
+The student has started a quiz on a specific topic. Behave as a quiz host:
+- Ask ONE question at a time, then wait for the student's answer before continuing.
+- After each answer: briefly say whether it's right, wrong, or partially right; give a short, focused explanation; then move to the next question.
+- Vary question types where it makes sense (recall, application, short worked problems, multiple choice).
+- Keep questions tightly within the topic the student picked.
+- Aim for around 5 questions total unless the student asks for more or fewer. After the last one, give a short summary of how they did and where to focus next.
+- Do NOT give hints unless the student asks for one. Do NOT answer your own questions for them.
+- Do NOT introduce yourself with a name or persona. Stay in quiz-host mode.`;
+
 export async function POST(req: NextRequest) {
   try {
-    const { message, sessionId, studentId, schoolId, history } = await req.json();
+    const { message, sessionId, studentId, schoolId, history, mode } = await req.json();
 
     if (!message || !studentId) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    // ── Step 1: AEGIS — assess risk of student message ────────────────────────
-    const riskAssessment = assessRisk(message);
-    const category = categoryFromMatched(riskAssessment.matched);
+    // ── Step 1+2: ATLAS — pull everything in parallel, then AEGIS assess ──────
+    // We need three keyword sources before we can score the prompt:
+    //   - Hard floor (always on, hardcoded above)
+    //   - Beacon defaults (toggleable per school via use_beacon_defaults)
+    //   - School additions (always on, per-school table)
+    // School settings also carries religious_affiliation, used later in the
+    // system prompt. One round-trip; three queries in parallel.
+    const sid_for_query = schoolId || "beacon-academy";
+    const [schoolPoliciesRes, defaultPoliciesRes, settingsRes] = await Promise.all([
+      supabase.from("beacon_policies").select("word,severity").eq("school_id", sid_for_query),
+      supabase.from("beacon_default_policies").select("word,severity"),
+      supabase
+        .from("school_settings")
+        .select("religious_affiliation,use_beacon_defaults")
+        .eq("school_id", sid_for_query)
+        .single(),
+    ]);
 
-    // ── Step 2: ATLAS — get school policies from DB ───────────────────────────
-    const { data: policies } = await supabase
-      .from("beacon_policies")
-      .select("word,severity")
-      .eq("school_id", schoolId || "beacon-academy");
+    const schoolPolicies   = schoolPoliciesRes.data  ?? [];
+    const defaultPolicies  = defaultPoliciesRes.data ?? [];
+    const affiliationSlug  = settingsRes.data?.religious_affiliation ?? null;
+    // If school_settings row is missing, default to inheriting Beacon defaults
+    // (matches the column default and the new-school behaviour).
+    const useBeaconDefaults = settingsRes.data?.use_beacon_defaults ?? true;
 
-    // Check against school-specific policies from Supabase
-    if (policies?.length) {
-      const schoolHighMatches = policies
-        .filter(p => p.severity === "high" && matchesWord(message, p.word))
-        .map(p => p.word);
-
-      const schoolMedMatches = policies
-        .filter(p => p.severity === "medium" && matchesWord(message, p.word))
-        .map(p => p.word);
-
-      if (schoolHighMatches.length) {
-        riskAssessment.matched.push(...schoolHighMatches);
-        riskAssessment.blocked = true;
-        riskAssessment.risk = "high";
-      } else if (schoolMedMatches.length && riskAssessment.risk === "low") {
-        riskAssessment.matched.push(...schoolMedMatches);
-        riskAssessment.risk = "medium";
+    // Merge into the final match set. Use Sets so a word appearing in multiple
+    // layers (e.g. school re-added a word that's also a default) only matches
+    // once and doesn't double-report in `matched`.
+    const highSet   = new Set<string>(BEACON_HARDFLOOR_HIGH);
+    const mediumSet = new Set<string>();
+    if (useBeaconDefaults) {
+      for (const p of defaultPolicies) {
+        if (p.severity === "high")   highSet.add(p.word);
+        if (p.severity === "medium") mediumSet.add(p.word);
       }
     }
+    for (const p of schoolPolicies) {
+      if (p.severity === "high")   highSet.add(p.word);
+      if (p.severity === "medium") mediumSet.add(p.word);
+    }
+    const mergedKeywords: KeywordSet = {
+      high:   [...highSet],
+      medium: [...mediumSet],
+    };
+
+    const riskAssessment = assessRisk(message, mergedKeywords);
+    const category = categoryFromMatched(riskAssessment.matched);
 
     // ── Step 3: RESOLVE — determine action ───────────────────────────────────
     if (riskAssessment.blocked) {
@@ -126,7 +187,7 @@ export async function POST(req: NextRequest) {
 
       // Return a safe refusal message
       const refusal = category === "jailbreak"
-        ? "I can see you're trying to change how I work. I'm BeaconChat — a safe school assistant and I can't help with that. Is there something else I can help you learn today?"
+        ? "It looks like you're trying to change how Horizon works. Horizon is a safe school workspace, so that's not something it can do. Is there something else to help with today?"
         : "I'm not able to help with that topic. If you're concerned about something, please speak to a trusted teacher or adult. Is there something else I can help you with?";
 
       await logMessage({
@@ -165,12 +226,18 @@ export async function POST(req: NextRequest) {
       { role: "user", content: message },
     ];
 
-    // Add risk context to system prompt for medium risk prompts
-    const systemPrompt = riskAssessment.risk === "medium"
-      ? SYSTEM_PROMPT + `
+    // Build system prompt: base + optional school context + optional mode supplement + optional risk note.
+    let systemPrompt = SYSTEM_PROMPT;
+    const affiliationContext = affiliationSlug ? AFFILIATION_CONTEXT[affiliationSlug] : null;
+    if (affiliationContext) {
+      systemPrompt += `\n\n## SCHOOL CONTEXT\n${affiliationContext} You may take this into account when a student's question touches on RE, ethics, religious holidays, school traditions, or pastoral matters. Do NOT impose religious framing on academic subjects (maths, science, history, languages, etc.) — treat those neutrally.`;
+    }
+    if (mode === "quiz") systemPrompt += "\n\n" + QUIZ_SUPPLEMENT;
+    if (riskAssessment.risk === "medium") {
+      systemPrompt += `
 
-Note: This message has been flagged by the school's safeguarding system for containing informal or potentially inappropriate language (matched: ${riskAssessment.matched.join(", ")}). Please respond helpfully but gently encourage the use of appropriate, respectful language where relevant.`
-      : SYSTEM_PROMPT;
+Note: This message has been flagged by the school's safeguarding system for containing informal or potentially inappropriate language (matched: ${riskAssessment.matched.join(", ")}). Please respond helpfully but gently encourage the use of appropriate, respectful language where relevant.`;
+    }
 
     const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -196,7 +263,9 @@ Note: This message has been flagged by the school's safeguarding system for cont
     const tokens     = claudeData.usage?.input_tokens + claudeData.usage?.output_tokens;
 
     // ── Step 6: Assess AI response (AEGIS on response) ───────────────────────
-    const responseRisk = assessRisk(reply);
+    // Re-use the same merged keyword set: if the AI response contains a
+    // school-policy hit, we want it flagged the same way as a student message.
+    const responseRisk = assessRisk(reply, mergedKeywords);
 
     // ── Step 7: Log assistant response ───────────────────────────────────────
     sid = await logMessage({
@@ -268,6 +337,9 @@ async function logMessage({
       risk:       risk === "blocked" ? "high" : (risk || "low"),
       blocked:    blocked || false,
       matched:    matched || [],
+      category:   category || "general",   // already computed upstream — stop dropping it
+      rationale:  null,                    // keyword path has no rationale
+      risk_source: "keyword",
       hostname:   "beaconchat",
     });
     if (insertResult.error) {

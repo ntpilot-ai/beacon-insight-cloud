@@ -6,17 +6,21 @@ import { fetchAllEvents } from "@/lib/fetchEvents";
 import { useAuth } from "@/lib/useAuth";
 import { SCHOOL_ID, SCHOOL_NAME } from "@/lib/config";
 import { calculateAllPulses } from "@/lib/pulse_engine";
+import {
+  calculateAllPulsesV3,
+  type PulseAcknowledgement,
+} from "@/lib/pulse_engine_v3";
+import { evaluatePulseEligibility } from "@/lib/promotion";
 import { deriveStudentStatus, STATUS_STYLE, type StudentStatus } from "@/lib/student_status";
 import Sidebar from "@/components/Sidebar";
 import BeaconIntelligence from "@/components/AISummary";
 import Link from "next/link";
 import TrendLine from "@/components/TrendLine";
+import { ShieldAlert, Activity, ArrowRight } from "lucide-react";
 
-interface DashboardAck {
-  student_id:     string;
-  acknowledged_at: string;
-  action_taken:   string;
-}
+// Use the engine's PulseAcknowledgement type so the dashboard can call
+// calculateAllPulsesV3 without a cast. Fetched columns (loadPulseStatus)
+// must include everything v3 reads from acks.
 
 interface DashboardSnooze {
   student_id: string;
@@ -169,7 +173,7 @@ function RecentSafeguardingEvents({
 }: {
   events:  BeaconEvent[];
   pulses:  any[];
-  acks:    DashboardAck[];
+  acks:    PulseAcknowledgement[];
   snoozes: DashboardSnooze[];
   maxRows?: number;
 }) {
@@ -321,158 +325,59 @@ function RecentSafeguardingEvents({
   );
 }
 
-function TodayPanel({
-  events,
-  pulses,
-  acks,
-  snoozes,
+// ── Queue summary cards (replaces TodayPanel) ─────────────────────────────
+// Two-up summary of the Aegis and Pulse queues. Each card = current student
+// count + link to the page. Aegis = unique students with unreviewed flagged
+// events in the last 7 days (matches the Aegis page's default window).
+// Pulse = students currently on the Pulse queue (eligibility via
+// evaluatePulseEligibility, same rule the Pulse page uses).
+//
+// Visual treatment: navigable cards (whole card is the link, light hover
+// lift), large count, icon matching the sidebar nav, "View →" affordance.
+
+function QueueSummaryCard({
+  title,
+  href,
+  count,
+  Icon,
+  accent,
+  iconBg,
+  hint,
 }: {
-  events:  BeaconEvent[];
-  pulses:  any[];
-  acks:    DashboardAck[];
-  snoozes: DashboardSnooze[];
+  title:  string;
+  href:   string;
+  count:  number;
+  Icon:   typeof ShieldAlert;
+  accent: string;
+  iconBg: string;
+  hint:   string;
 }) {
-  const now       = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-  const todayEvents = events.filter(e =>
-    new Date(e.created_at) >= todayStart &&
-    (e.risk === "high" || e.risk === "critical" || e.risk === "medium" || e.blocked)
-  );
-
-  const byStudent: Record<string, { events: BeaconEvent[]; topRisk: string; lastSeen: string }> = {};
-  todayEvents.forEach(e => {
-    if (!byStudent[e.student_id]) {
-      byStudent[e.student_id] = { events: [], topRisk: "medium", lastSeen: e.created_at };
-    }
-    byStudent[e.student_id].events.push(e);
-    const riskOrder: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
-    if ((riskOrder[e.risk] || 0) > (riskOrder[byStudent[e.student_id].topRisk] || 0)) {
-      byStudent[e.student_id].topRisk = e.risk;
-    }
-    if (new Date(e.created_at) > new Date(byStudent[e.student_id].lastSeen)) {
-      byStudent[e.student_id].lastSeen = e.created_at;
-    }
-  });
-
-  const nowMs = Date.now();
-  const activeSnoozeSet = new Set(
-    snoozes
-      .filter(s => !s.broken_early && (!s.expires_at || new Date(s.expires_at).getTime() > nowMs))
-      .map(s => s.student_id)
-  );
-  const ackedSet = new Set(acks.map(a => a.student_id));
-
-  const students = Object.entries(byStudent)
-    .sort((a, b) => {
-      const riskOrder: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
-      const statusA = activeSnoozeSet.has(a[0]) ? 2 : ackedSet.has(a[0]) ? 1 : 0;
-      const statusB = activeSnoozeSet.has(b[0]) ? 2 : ackedSet.has(b[0]) ? 1 : 0;
-      if (statusA !== statusB) return statusA - statusB;
-      return (riskOrder[b[1].topRisk] || 0) - (riskOrder[a[1].topRisk] || 0);
-    });
-
-  if (students.length === 0) {
-    return (
-      <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-8 text-center">
-        <div className="text-3xl mb-3">✅</div>
-        <div className="font-semibold text-slate-700">No flagged activity today</div>
-        <div className="text-sm text-slate-400 mt-1">All student AI usage is within normal parameters</div>
-      </div>
-    );
-  }
-
-  const riskOrder: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
-
+  const pluralised = count === 1 ? "student" : "students";
   return (
-    <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-      <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-        <div>
-          <h2 className="font-bold text-slate-800">Students Needing Attention Today</h2>
-          <p className="text-xs text-slate-400 mt-0.5">Medium and high risk activity in the last 24 hours</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-xs font-bold px-3 py-1 rounded-full bg-red-100 text-red-700">
-            {students.length} student{students.length !== 1 ? "s" : ""}
+    <Link
+      href={href}
+      className="group bg-white rounded-2xl border border-slate-100 shadow-sm p-6 flex items-center gap-5 hover:shadow-md hover:border-slate-200 transition-all"
+    >
+      <div className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0`} style={{ background: iconBg, color: accent }}>
+        <Icon size={24} strokeWidth={1.75} />
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <div className="text-sm text-slate-500 font-medium">{title}</div>
+        <div className="flex items-baseline gap-2 mt-1">
+          <span className="text-4xl font-bold leading-none" style={{ color: accent }}>
+            {count.toLocaleString()}
           </span>
-          <Link
-            href="/pulse-beta"
-            className="text-xs font-semibold text-[#06B6D4] border border-[#06B6D4] px-3 py-1 rounded-full hover:bg-cyan-50 transition-colors"
-          >
-            View Pulse Queue →
-          </Link>
+          <span className="text-sm text-slate-400 font-medium">{pluralised}</span>
         </div>
+        <div className="text-xs text-slate-400 mt-1.5">{hint}</div>
       </div>
 
-      <div className="divide-y divide-slate-100">
-        {students.map(([studentId, data]) => {
-          const rs       = RISK_STYLE[data.topRisk] ?? RISK_STYLE.medium;
-          const pulse    = pulses.find(p => p.student_id === studentId);
-          const blocked  = data.events.filter(e => e.blocked).length;
-
-          const now = Date.now();
-          const activeSnooze = snoozes.find(s =>
-            s.student_id === studentId &&
-            !s.broken_early &&
-            (!s.expires_at || new Date(s.expires_at).getTime() > now),
-          );
-          const recentAck = acks
-            .filter(a => a.student_id === studentId)
-            .sort((a, b) => new Date(b.acknowledged_at).getTime() - new Date(a.acknowledged_at).getTime())[0];
-
-          const latestTime = new Date(data.lastSeen).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-          const trendArrow = pulse?.trend_direction === "rising"  ? "↑"
-                           : pulse?.trend_direction === "falling" ? "↓"
-                           : "→";
-
-          const rowBg    = activeSnooze ? "bg-cyan-50/40"
-                         : recentAck    ? "bg-emerald-50/40"
-                         : "";
-          const borderColor = activeSnooze ? "#06B6D4" : recentAck ? "#10B981" : rs.dot;
-
-          return (
-            <div key={studentId}
-              className={`px-5 py-2.5 border-l-4 transition-colors hover:brightness-95 ${rowBg}`}
-              style={{ borderLeftColor: borderColor }}>
-
-              <div className="flex items-center gap-x-3 gap-y-1 min-w-0 flex-wrap">
-                <span className="font-bold text-slate-800 break-all">{studentId}</span>
-                <span className={`text-[11px] font-bold tracking-wide ${rs.text}`}>
-                  {data.topRisk.toUpperCase()}
-                </span>
-                {pulse && (
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full border border-slate-200 bg-white" style={{ color: rs.dot }}>
-                    Pulse {pulse.pulse_score} {trendArrow}
-                  </span>
-                )}
-                {activeSnooze && (
-                  <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-cyan-100 text-cyan-700">
-                    💤 Snoozed in Pulse
-                  </span>
-                )}
-                {!activeSnooze && recentAck && (
-                  <span className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full ${ACK_ACTION_BADGE[recentAck.action_taken]?.cls ?? "bg-emerald-100 text-emerald-700"}`}>
-                    ✓ {ACK_ACTION_BADGE[recentAck.action_taken]?.label ?? "Reviewed"}
-                  </span>
-                )}
-                <span className="text-xs text-slate-400 flex items-center gap-2">
-                  <span><span className="font-semibold text-slate-600">{data.events.length}</span> incident{data.events.length !== 1 ? "s" : ""}</span>
-                  {blocked > 0 && (
-                    <>
-                      <span className="text-slate-300">·</span>
-                      <span><span className="font-semibold text-red-600">{blocked}</span> blocked</span>
-                    </>
-                  )}
-                  <span className="text-slate-300">·</span>
-                  <span>latest {latestTime}</span>
-                </span>
-              </div>
-
-            </div>
-          );
-        })}
+      <div className="text-xs font-semibold text-slate-400 group-hover:text-slate-700 transition-colors flex items-center gap-1 shrink-0">
+        View
+        <ArrowRight size={14} strokeWidth={2} className="group-hover:translate-x-0.5 transition-transform" />
       </div>
-    </div>
+    </Link>
   );
 }
 
@@ -600,7 +505,7 @@ function OverviewSection({ events, period, setPeriod, range }: {
 export default function DashboardBeta() {
   const { loading: authLoading, authenticated } = useAuth();
   const [events, setEvents]   = useState<BeaconEvent[]>([]);
-  const [acks, setAcks]       = useState<DashboardAck[]>([]);
+  const [acks, setAcks]       = useState<PulseAcknowledgement[]>([]);
   const [snoozes, setSnoozes] = useState<DashboardSnooze[]>([]);
   const [period, setPeriod]   = useState<Period>("term");
   const [live, setLive]       = useState(true);
@@ -611,13 +516,15 @@ export default function DashboardBeta() {
   }
 
   async function loadPulseStatus() {
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    // v3 engine reads multiple fields (alert_level, dominant_category,
+    // action_taken, expires_at, etc.); fetch the full row. Drop the
+    // 7-day time filter — Pulse eligibility needs the full ack history to
+    // correctly identify escalated/referred students.
     const [acksRes, snoozesRes] = await Promise.all([
       supabase
         .from("pulse_acknowledgements")
-        .select("student_id,acknowledged_at,action_taken")
+        .select("*")
         .eq("school_id", SCHOOL_ID)
-        .gte("acknowledged_at", sevenDaysAgo)
         .order("acknowledged_at", { ascending: false }),
       supabase
         .from("pulse_snooze")
@@ -625,7 +532,7 @@ export default function DashboardBeta() {
         .eq("school_id", SCHOOL_ID)
         .eq("broken_early", false),
     ]);
-    if (acksRes.data)    setAcks(acksRes.data as DashboardAck[]);
+    if (acksRes.data)    setAcks(acksRes.data as PulseAcknowledgement[]);
     if (snoozesRes.data) setSnoozes(snoozesRes.data as DashboardSnooze[]);
   }
 
@@ -650,6 +557,73 @@ export default function DashboardBeta() {
   }, [events, range]);
 
   const pulses = useMemo(() => calculateAllPulses(events), [events]);
+
+  // ── Aegis queue count ────────────────────────────────────────────────
+  // Mirrors the Aegis page's default view: events in the last 7 days that
+  // are flagged (medium/high/critical OR blocked) and are NOT covered by a
+  // later ack for the same student. Count = unique students with ≥1 such
+  // event. Aegis's session-local "dismiss" is intentionally not modelled
+  // here — the dashboard shows the server-truth queue, not one DSL's
+  // session.
+  const aegisStudentCount = useMemo(() => {
+    const cutoff = Date.now() - 7 * 86400000;
+
+    // Latest ack timestamp per student — events older than this are
+    // considered reviewed.
+    const latestAckByStudent = new Map<string, number>();
+    for (const a of acks) {
+      const t   = new Date(a.acknowledged_at).getTime();
+      const cur = latestAckByStudent.get(a.student_id) ?? 0;
+      if (t > cur) latestAckByStudent.set(a.student_id, t);
+    }
+
+    const studentIds = new Set<string>();
+    for (const e of events) {
+      if (e.risk === "low" && !e.blocked)               continue;
+      const ts = new Date(e.created_at).getTime();
+      if (ts < cutoff)                                  continue;
+      const latestAck = latestAckByStudent.get(e.student_id);
+      if (latestAck !== undefined && ts <= latestAck)   continue;
+      studentIds.add(e.student_id);
+    }
+    return studentIds.size;
+  }, [events, acks]);
+
+  // ── Pulse queue count ────────────────────────────────────────────────
+  // Mirrors the Pulse page's eligibility logic: v3 engine output filtered
+  // via evaluatePulseEligibility. Includes snoozed students — they still
+  // appear on the Pulse page (in a separate band), so they count toward
+  // "students currently on Pulse." No term context is passed; the engine
+  // falls back to unbounded computation, same fallback the Pulse page
+  // hits when the term-context fetch fails.
+  const pulseStudentCount = useMemo(() => {
+    const pulsesV3 = calculateAllPulsesV3(events, acks);
+
+    const eventsByStudent = new Map<string, BeaconEvent[]>();
+    for (const e of events) {
+      const list = eventsByStudent.get(e.student_id);
+      if (list) list.push(e);
+      else      eventsByStudent.set(e.student_id, [e]);
+    }
+
+    const escalationAckSet = new Set<string>();
+    for (const a of acks) {
+      if (a.action_taken === "escalated" || a.action_taken === "referred") {
+        escalationAckSet.add(a.student_id);
+      }
+    }
+
+    let count = 0;
+    for (const p of pulsesV3) {
+      const elig = evaluatePulseEligibility({
+        pulse:            p,
+        events:           eventsByStudent.get(p.student_id) ?? [],
+        hasEscalationAck: escalationAckSet.has(p.student_id),
+      });
+      if (elig.appearsInPulse) count++;
+    }
+    return count;
+  }, [events, acks]);
 
   const totalPrompts = filteredEvents.length;
   const blockedToday = useMemo(() => {
@@ -724,15 +698,34 @@ export default function DashboardBeta() {
             />
           </div>
 
-          {/* TodayPanel leads — it's the per-event "what's happened in the
-              last 24h" view and surfaces the most-urgent recent activity at
-              row level. */}
-          <TodayPanel events={events} pulses={pulses} acks={acks} snoozes={snoozes} />
+          {/* Queue summary — two-up "what's on each list" KPIs that link
+              into the Aegis and Pulse pages. Replaces the older TodayPanel
+              row-level view; the row-level read now lives entirely on the
+              Aegis page. */}
+          <div className="grid grid-cols-2 gap-5">
+            <QueueSummaryCard
+              title="Students on Aegis"
+              href="/aegis-beta"
+              count={aegisStudentCount}
+              Icon={ShieldAlert}
+              accent="#DC2626"
+              iconBg="#FEF2F2"
+              hint="Unreviewed flagged events · last 7 days"
+            />
+            <QueueSummaryCard
+              title="Students on Pulse"
+              href="/pulse-beta"
+              count={pulseStudentCount}
+              Icon={Activity}
+              accent="#06B6D4"
+              iconBg="#ECFEFF"
+              hint="Pattern, severity, or manual escalation"
+            />
+          </div>
 
-          {/* Recent Safeguarding Events sits below — concept-deck-style table
-              with workflow Status as the primary verb. Provides the
-              caseload-level read across the last 7 days, complementing
-              TodayPanel's tighter 24h focus. */}
+          {/* Recent Safeguarding Events — concept-deck-style table with
+              workflow Status as the primary verb. Provides the caseload-level
+              read across the last 7 days. */}
           <RecentSafeguardingEvents events={events} pulses={pulses} acks={acks} snoozes={snoozes} />
 
           <OverviewSection events={filteredEvents} period={period} setPeriod={setPeriod} range={range} />

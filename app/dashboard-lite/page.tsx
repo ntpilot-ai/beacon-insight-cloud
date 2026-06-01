@@ -30,15 +30,46 @@ const TERMS = [
   { label: "All Time",         start: "2000-01-01", end: "2099-12-31" },
 ];
 
-function getCurrentTerm(): string {
-  const now = new Date();
-  const current = TERMS.find(t => {
-    const s = new Date(t.start);
-    const e = new Date(t.end);
-    e.setHours(23, 59, 59);
-    return now >= s && now <= e && t.label !== "All Time";
-  });
-  return current?.label ?? "All Time";
+type Period = "7d" | "term" | "year";
+
+const PERIOD_LABELS: Record<Period, string> = {
+  "7d":   "7 Days",
+  term:   "This Term",
+  year:   "Academic Year",
+};
+
+function getPeriodRange(period: Period, now: Date = new Date()): { start: Date; end: Date } {
+  if (period === "7d") {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - 6);
+    return { start, end: now };
+  }
+  if (period === "term") {
+    const current = TERMS.find(t => {
+      if (t.label === "All Time") return false;
+      const s = new Date(t.start);
+      const e = new Date(t.end);
+      e.setHours(23, 59, 59);
+      return now >= s && now <= e;
+    });
+    if (current) {
+      const e = new Date(current.end);
+      e.setHours(23, 59, 59);
+      return { start: new Date(current.start), end: e };
+    }
+    // Between-term fallback: nearest 90 days
+    const start = new Date(now);
+    start.setDate(start.getDate() - 90);
+    return { start, end: now };
+  }
+  // Academic year: Sep 1 → Aug 31, anchored on the autumn-term start year
+  const month = now.getMonth();
+  const startYear = month >= 8 ? now.getFullYear() : now.getFullYear() - 1;
+  const start = new Date(startYear, 8, 1);
+  const end = new Date(startYear + 1, 7, 31);
+  end.setHours(23, 59, 59);
+  return { start, end };
 }
 
 function KPICard({ label, value, sub, color, large }: {
@@ -91,7 +122,7 @@ function RiskBreakdownCard({ events }: { events: BeaconEvent[] }) {
 export default function DashboardLite() {
   const { loading: authLoading, authenticated } = useAuth();
   const [events, setEvents] = useState<BeaconEvent[]>([]);
-  const [term, setTerm]     = useState(getCurrentTerm);
+  const [period, setPeriod] = useState<Period>("term");
   const [live, setLive]     = useState(true);
 
   async function loadEvents() {
@@ -107,12 +138,14 @@ export default function DashboardLite() {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
+  const range = useMemo(() => getPeriodRange(period), [period]);
+
   const filteredEvents = useMemo(() => {
-    const t = TERMS.find(t => t.label === term) ?? TERMS[0];
-    const s = new Date(t.start), e = new Date(t.end);
-    e.setHours(23, 59, 59);
-    return events.filter(ev => { const d = new Date(ev.created_at); return d >= s && d <= e; });
-  }, [events, term]);
+    return events.filter(ev => {
+      const d = new Date(ev.created_at);
+      return d >= range.start && d <= range.end;
+    });
+  }, [events, range]);
 
   const totalPrompts = filteredEvents.length;
 
@@ -139,13 +172,21 @@ export default function DashboardLite() {
             <p className="text-sm text-slate-400 mt-0.5">At-a-glance activity overview</p>
           </div>
           <div className="flex items-center gap-3">
-            <select
-              value={term}
-              onChange={e => setTerm(e.target.value)}
-              className="text-xs border border-slate-200 rounded-xl px-3 py-2 text-slate-500 bg-white focus:outline-none"
-            >
-              {TERMS.map(t => <option key={t.label} value={t.label}>{t.label}</option>)}
-            </select>
+            <div className="flex gap-1 bg-slate-100 rounded-full p-1">
+              {(Object.keys(PERIOD_LABELS) as Period[]).map(p => (
+                <button
+                  key={p}
+                  onClick={() => setPeriod(p)}
+                  className={`px-3 py-1 rounded-full text-xs font-semibold transition-all ${
+                    period === p
+                      ? "bg-[#06B6D4] text-white shadow-sm"
+                      : "text-slate-500 hover:text-slate-700"
+                  }`}
+                >
+                  {PERIOD_LABELS[p]}
+                </button>
+              ))}
+            </div>
             <Link
               href="/"
               className="text-xs font-semibold text-slate-500 border border-slate-200 px-4 py-2 rounded-xl hover:border-[#06B6D4] hover:text-[#06B6D4] transition-all"
@@ -167,7 +208,7 @@ export default function DashboardLite() {
 
           <div className="grid grid-cols-3 gap-5">
             <KPICard
-              label="Total Prompts This Term"
+              label={`Total Prompts · ${PERIOD_LABELS[period]}`}
               value={totalPrompts.toLocaleString()}
               sub="Across all monitored AI platforms"
               color="#06B6D4"
@@ -182,7 +223,7 @@ export default function DashboardLite() {
             <RiskBreakdownCard events={filteredEvents} />
           </div>
 
-          <TrendLine events={filteredEvents} />
+          <TrendLine events={filteredEvents} range={range} />
 
           <PlatformUsage events={filteredEvents} />
 

@@ -4,6 +4,9 @@
 ## Project Overview
 School AI safeguarding platform. Monitors student AI usage across external platforms (via Chrome extension) and provides a managed AI chat interface (BeaconChat). Reports to a teacher/DSL dashboard.
 
+**Sub-project codenames** (matches the wider Beacon platform naming):
+- **Horizon** — the student AI workspace (an AI-native learning environment, not just a chatbot). Replaces the standalone "BeaconChat" direction: chat is now one surface inside a larger workspace alongside Home, Notes, and (roadmap) Tasks / Study Planner / Projects. See the **Horizon v1 build spec** section near the bottom of this file for the full brief.
+
 ## Tech Stack
 - **Frontend:** Next.js 16.2.6 (Turbopack), React 19, TypeScript, Tailwind v4
 - **Backend:** Supabase (Postgres + Realtime), Anthropic API (Claude Haiku)
@@ -13,8 +16,27 @@ School AI safeguarding platform. Monitors student AI usage across external platf
 ## Key Config
 - School ID: `beacon-academy`
 - School Name: `Beacon Academy`
-- Primary colour: `#06B6D4` (Beacon cyan)
+- Master umbrella brand colour: `#013B93` (**Beacon Blue**) — see Brand & Design System section below for the full engine palette.
 - Supabase URL: `https://eyvwvmjcuahduuokpmng.supabase.co`
+
+> Heritage note: a lot of the existing educator-side UI (`/`, `/atlas`, `/pulse`, `Sidebar.tsx`, `BeaconChat` references) uses `#06B6D4` as a de-facto primary. Per the master design system that hex is **Insight cyan** (the engine colour for the educator reporting product), not the umbrella Beacon brand colour. The cyan-as-primary leftover predates the master system being locked; treat it as a deferred clean-up, not a current convention.
+
+## Brand & Design System
+Canonical source: **Beacon — Master Design System v1.0** (PDF held in `C:\Users\niktu\OneDrive\Businesses\NewEdTech\Product Concept\Beacon Design Master\`). All new surfaces follow this; do not invent new colours.
+
+**Brand colours** (use ONLY these hexes for engine/product-level colour):
+- **Beacon Blue** `#013B93` — umbrella brand, parent platform mark
+- **Sentinel Red** `#DC2626` — intercept gateway, alerts
+- **Aegis Green** `#10B981` — safeguarding, protection
+- **Pulse Amber** `#F59E0B` — behaviour & learning insight
+- **Atlas Purple** `#8B5CF6` — governance & policy
+- **Resolve Orange** `#F97316` — decision logic, escalation
+- **Insight Cyan** `#06B6D4` — educator reporting & analytics
+- **Nexus Teal** `#0F4C5C` — AI orchestration & routing
+
+**Typography**: Montserrat for headings (Hero 42/700, Slide 32/700, Section 24/600, Card 18/600), Inter for body (14/400) and caption (12/500).
+
+**Visual principles**: enterprise-grade, clean, modern, calm under pressure. Modular card-based layouts, rounded corners, soft shadows. No neon, cyberpunk, heavy glow, or busy layouts. WCAG AA, keyboard-navigable, scalable to web/mobile/slides.
 
 ## Environment Variables
 ```
@@ -141,7 +163,11 @@ Current shared layout (both pages):
 
 ## Test Data Management
 
-**Status (2026-05-26):** Tenant wiped to clean slate; reseed in progress.
+**Status (2026-06-01):** Reseed complete — scenario students reseeded to spec
+and verified (`scripts/verify_fixtures.ts`: 9 pass · 0 fail). All events now
+carry the snake_case `category` column and acks store snake_case
+`dominant_category` (Aegis signal decoupling + vocabulary cutover, migrations
+0017/0018 applied).
 All test data is fully synthetic/fictional — never real captured student prompts.
 
 ### Background
@@ -230,6 +256,124 @@ surfaces, and the rough remedy.
   keyword classification can't read clinical context. Remedy is the
   pending Claude-based Aegis classifier; tightening the keyword list in
   isolation risks regressing the genuine self-harm cases.
+
+- **Euphemistic crisis disclosures score LOW and reach no one.** The most
+  safeguarding-critical case currently slips through silently. A genuine
+  suicidal-ideation prompt like *"im feeling very low, I dont want to be
+  here anymore"* contains none of the hard-floor HIGH keywords (`suicide`,
+  `kill`, `harm`, …), so `assessRisk` (`app/api/chat/route.ts`) scores it
+  `risk: low, blocked: false` and mirrors it to `beacon_events` as low.
+  Consequences after the Phase 5 Aegis/Pulse split:
+    - **Not blocked** (correct — you don't wall off a distressed student).
+    - **Invisible on Aegis** — the worklist's first filter drops
+      `risk === "low" && !blocked` (`app/aegis-beta/page.tsx`).
+    - **Not promoted to Pulse** — a single low event fires no
+      `evaluatePulseEligibility` rule.
+    - **Triage LLM can't save it** — `/api/triage/run` is on-demand only
+      (no cron) AND is fed a behavioural summary derived from the same
+      keyword classification, so a low-scored disclosure barely registers.
+  The only thing that "handles" it is Claude's own in-chat reply
+  (helplines, "talk to a trusted adult") — good, but only the *student*
+  sees it; no member of staff is alerted. Root cause is the same keyword
+  limit as the grooming/self-harm gaps: real disclosures almost never use
+  the trigger words ("I want to commit suicide" is caught; "I don't want
+  to be here anymore" is not). This is the strongest argument yet for the
+  Claude-based Aegis classifier. Beyond classification, the split raised a
+  live design question — *where* should a real-time crisis signal be
+  caught and alerted (it doesn't fit the Aegis worklist or the Pulse
+  case-management model cleanly). Surfaced 2026-05-29; remedy is being
+  scoped (real-time disclosure → immediate alert lane, separate from the
+  event-triage and pattern-analysis surfaces).
+
+---
+
+# Claude Code Build Spec — Horizon v1 (Student Workspace Shell)
+
+## What you're building
+**Horizon** is a student AI workspace for schools — an AI-native learning environment, not just a chatbot. It replaces the earlier "BeaconChat" direction: chat is now *one surface inside a larger workspace*. Horizon is powered by the Beacon safeguarding/governance platform (every AI interaction is intercepted, analysed, and governed in real time).
+
+This task builds a **walkable v1 shell**: the workspace navigation, the chat surface, one productivity area (Notes & Study Materials), and Horizon's signature **adaptive-mode indicator**. Everything else in the Horizon vision is explicitly roadmap / out of scope (see bottom).
+
+Inspect the existing repo first (the live skeleton is at `https://beacon-insight-cloud.vercel.app/chat`) and follow its stack, conventions, and file structure. Do not introduce a new framework or styling system.
+
+## Who it's for
+**Students** (secondary, ~Year 7–13). Tone: a friendly, trustworthy AI study companion. Fully responsive — works on school laptops and tablets; left nav collapses on narrow screens.
+
+## Design language
+Continue Beacon's existing brand per the **Brand & Design System** section near the top of this file — do NOT invent a new one:
+- Primary: **Beacon Blue `#013B93`** (umbrella brand). Use it for the nav rail, primary CTAs, focus rings, and any "Horizon"/parent identity.
+- Engine accents (use sparingly, only where the meaning lines up): Aegis Green for safeguarding-positive states, Sentinel Red for blocked/intercept states (intervention layer is out of scope for v1 but reserve the colour), Nexus Teal where AI-routing is being made visible.
+- Typography: Montserrat for headings, Inter for body/caption (Hero 42/700, Slide 32/700, Section 24/600, Card 18/600, Body 14/400, Caption 12/500).
+- Content background `#f4f7fc`; cards white with soft shadow and rounded corners; navy nav rail.
+- Calm, modular, card-based; safety and guidance feel like features, not surveillance.
+- Do NOT use the deprecated `#0b2a6b` / `#1d5cd6` / `#2f6df0` values from earlier drafts — they're not in the master system.
+
+---
+
+## Information architecture
+A persistent **left navigation rail** (collapsible to icons / hamburger on mobile) with these top-level areas:
+1. **Home** — the default view on login. A personalised dashboard: greeting by name, recent notes and recent chats at a glance, and a prominent "Ask Horizon" entry point.
+2. **Chat** — the conversation surface (detailed below; reuse what exists).
+3. **Notes** — notes & study materials productivity area (detailed below).
+4. (Roadmap placeholders, visible but disabled/"coming soon": Tasks, Study Planner, Projects.)
+
+Top bar (persistent across areas): Horizon identity, the **adaptive-mode indicator** (see below), a "Protected" status pill, and student identity/account.
+
+---
+
+## Surface 1 — Chat
+Reuse the already-designed BeaconChat layout, now embedded as a workspace surface rather than the whole app:
+- Conversation pane with clearly distinguished student vs AI turns; AI responses **stream token-by-token**; render markdown (code, lists, bold, headings).
+- Auto-growing multi-line composer; send button; attach-image control (Beacon's Sentinel layer intercepts images).
+- Per-conversation history (grouped Today / Yesterday / Earlier) accessible within the Chat area.
+- Persistent footer disclosure: "All conversations are monitored by Beacon Insight for safeguarding purposes."
+- Empty state greets the student by name with study-oriented starter prompts.
+- **Model access (v1)**: route to **Claude only**. The picker can still show ChatGPT / Gemini / Copilot as disabled "Soon" options so the multi-vendor story is visible, but no Auto/routing UI in v1 — Nexus orchestration and the "Auto (Horizon routes)" default are deferred. Structure the data flow so a `model` field can be sent to the API later without component changes.
+
+## Surface 2 — Notes & Study Materials
+A student productivity area that demonstrates the "workspace, not chatbot" thesis — a place where AI conversations turn into durable study assets:
+- A library of notes, organised by subject (and/or simple folders/tags). List or card view.
+- Create / edit / delete a note; rich-ish text (headings, lists, bold, code) consistent with how chat renders markdown.
+- Search/filter notes by subject and keyword.
+- **Chat integration hooks (the thesis-defining part)** — structure the data so these flow naturally; mock the AI side:
+  - "Save to notes" from a chat response — turn an AI answer or summary into a note (capture source conversation as provenance).
+  - "Ask Horizon about this note" — open a note's content into the chat surface as context.
+- Mock data only; structure so a real backend and real AI generation drop in later.
+
+> Note on integrity: because notes can be AI-generated, the adaptive mode matters here too — in Guided mode, "Save to notes" should favour the student's own synthesis / scaffolded material over a finished answer. Keep this hook in mind in the data model even though full enforcement is later.
+
+## Surface 3 — Adaptive-mode indicator (Horizon's signature element)
+Horizon adapts how much it helps based on context — sometimes a **learning coach** (scaffolds, asks questions, protects academic integrity), sometimes a **productivity assistant** (fuller, more direct help). The balance is *adaptive*. The student UI must make the current mode **honest and visible** so help levels never feel arbitrary.
+
+Build for v1:
+- A clear top-bar indicator showing the current mode, e.g. **"Guided"** (scaffolds, encourages thinking) vs **"Full help"** (direct assistance). Calm, informative styling — not a warning.
+- A short plain-language explanation on hover/tap ("Guided mode helps you think it through — great for assessed work").
+- The mode visibly shapes the chat surface (e.g. in Guided mode, a subtle note that Horizon will guide rather than give direct answers).
+- **For v1, drive the mode from a simple local/mock toggle** — teacher-side configuration is OUT OF SCOPE. Just consume and display a mode value; structure it so a config source can drive it later.
+
+---
+
+## Platform / naming canon (use consistently)
+Use the original Beacon 7-engine architecture as the canonical model:
+**Sentinel** (intercept gateway) → intelligence engine [**Aegis** safeguarding · **Pulse** behaviour/learning insight · **Atlas** governance & policy] → **Resolve** (decision: allow/warn/block/escalate) → **Nexus** (orchestration/routing to ChatGPT, Gemini, Copilot, Claude) → **Insight** (educator reporting). The Horizon doc's looser 4-engine summary is superseded by this. Student-facing copy can say "Horizon" / "Beacon" generically; engine names are internal/structural.
+
+---
+
+## Decisions already made
+- Horizon **replaces** the standalone BeaconChat direction; chat is one surface.
+- Integrity-vs-productivity balance is **adaptive** (mode-driven), surfaced via the indicator above.
+- Keep the monitoring footer and "Protected" pill.
+- Structure all surfaces so the safeguarding intervention layer (warn/block/escalate) and real backends can be added later.
+
+## Out of scope for v1 (specify as roadmap, do not build)
+- Teacher / educator configuration surfaces and the Insight dashboard.
+- Safeguarding intervention-state UI (warn / block / escalate) — structure for it, don't build it.
+- Notes is the v1 productivity area. Tasks, Study Planner, Projects, collaboration, wellbeing/guidance systems — nav placeholders only.
+- Real model integration and real backend — mock streaming + mock data, structured for later wiring.
+
+## Deliverable & how to start
+A working, responsive Horizon v1 shell (Home + Chat + Notes + adaptive-mode indicator) integrated into the existing repo's conventions.
+**Start by**: reading the existing code, then proposing your IA/component structure and how you'll handle the adaptive-mode state and the note↔chat handoffs ("save to notes" / "ask about this note") — and confirm those with me **before** building the full surfaces.
 
 ---
 

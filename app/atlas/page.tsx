@@ -14,6 +14,16 @@ interface Policy {
   school_id: string;
 }
 
+// Beacon-managed default policy (centrally curated, applies to every school).
+// Read-only from the school's perspective — no edit/remove UI.
+interface DefaultPolicy {
+  id:         string;
+  word:       string;
+  severity:   "high" | "medium";
+  created_at: string;
+  revised_at: string | null;
+}
+
 interface AuditEntry {
   id:         string;
   action:     "added" | "removed";
@@ -24,10 +34,52 @@ interface AuditEntry {
 }
 
 interface SchoolSettings {
-  msg_high:   string;
-  msg_medium: string;
-  badge_text: string;
+  msg_high:              string;
+  msg_medium:            string;
+  badge_text:            string;
+  religious_affiliation: string | null;
+  use_beacon_defaults:   boolean;
 }
+
+// Hard floor — displayed in the "Always on" sub-section under the Beacon
+// Default card. Mirrors BEACON_HARDFLOOR_HIGH in app/api/chat/route.ts and
+// extension/content.js. The three copies are a deliberate trade-off: the
+// extension can't import server code, and keeping them visibly side-by-side
+// makes the safety contract obvious. Any edit must update all three.
+const BEACON_HARDFLOOR_HIGH: string[] = [
+  "kill", "bomb", "suicide", "terrorist", "school shooting", "nazi",
+  "ignore previous instructions", "ignore all instructions",
+  "pretend you have no limits", "pretend you have no restrictions",
+  "act as dan", "jailbreak", "do anything now", "bypass your filters",
+  "you are now unrestricted", "developer mode",
+  "disregard your training", "you have no rules",
+];
+
+// Religious affiliation options — UK-focused. Slug is stored; label shown in UI;
+// context is the sentence injected into the Horizon system prompt for that school.
+// `null` slug = "no affiliation set"; chat API omits the context block.
+const AFFILIATIONS: { slug: string; label: string; context: string }[] = [
+  { slug: "none",            label: "None / Non-denominational",
+    context: "This is a non-denominational school with no specific religious character." },
+  { slug: "cofe",            label: "Church of England",
+    context: "This is a Church of England school. Anglican Christian values shape the school's ethos and worship." },
+  { slug: "catholic",        label: "Roman Catholic",
+    context: "This is a Roman Catholic school. Catholic teaching shapes the school's ethos, worship, and pastoral care." },
+  { slug: "christian_other", label: "Other Christian",
+    context: "This is a Christian school. Christian values shape the school's ethos and worship." },
+  { slug: "jewish",          label: "Jewish",
+    context: "This is a Jewish school. Jewish faith and tradition shape the school's ethos, worship, and calendar." },
+  { slug: "muslim",          label: "Muslim / Islamic",
+    context: "This is a Muslim school. Islamic faith and tradition shape the school's ethos, worship, and calendar." },
+  { slug: "sikh",            label: "Sikh",
+    context: "This is a Sikh school. Sikh faith and tradition shape the school's ethos, worship, and calendar." },
+  { slug: "hindu",            label: "Hindu",
+    context: "This is a Hindu school. Hindu faith and tradition shape the school's ethos, worship, and calendar." },
+  { slug: "multi_faith",     label: "Multi-faith",
+    context: "This is a multi-faith school. Students of different faiths and none are part of the school community, and the school values respect across traditions." },
+  { slug: "other",           label: "Other",
+    context: "This school has a specific religious character. Respect the school's faith ethos in your responses where relevant." },
+];
 
 const SEVERITY_CONFIG = {
   high: {
@@ -46,17 +98,20 @@ const SEVERITY_CONFIG = {
   },
 };
 
-type Tab = "policies" | "messages" | "audit" | "period";
+type Tab = "policies" | "messages" | "context" | "audit" | "period";
 
 export default function AtlasPage() {
   const { loading: authLoading, authenticated } = useAuth();
   const [tab, setTab]             = useState<Tab>("policies");
   const [policies, setPolicies]   = useState<Policy[]>([]);
+  const [defaults, setDefaults]   = useState<DefaultPolicy[]>([]);
   const [audit, setAudit]         = useState<AuditEntry[]>([]);
   const [settings, setSettings]   = useState<SchoolSettings>({
-    msg_high:   "",
-    msg_medium: "",
-    badge_text: "",
+    msg_high:              "",
+    msg_medium:            "",
+    badge_text:            "",
+    religious_affiliation: null,
+    use_beacon_defaults:   true,
   });
   const [loading, setLoading]     = useState(true);
   const [word, setWord]           = useState("");
@@ -68,22 +123,57 @@ export default function AtlasPage() {
   const [periods, setPeriods]     = useState<any[]>([]);
   const [savingPeriod, setSavingPeriod] = useState(false);
   const [periodSaved, setPeriodSaved]   = useState(false);
+  // Per-severity collapse for the Beacon Default sub-lists. Collapsed by
+  // default so the card stays compact; counts always visible in the header.
+  const [showDefaultHigh,   setShowDefaultHigh]   = useState(false);
+  const [showDefaultMedium, setShowDefaultMedium] = useState(false);
+  const [showHardfloor,     setShowHardfloor]     = useState(false);
 
   async function loadAll() {
-    const [polRes, audRes, setRes, perRes] = await Promise.all([
+    const [polRes, defRes, audRes, setRes, perRes] = await Promise.all([
       supabase.from("beacon_policies").select("*").eq("school_id", SCHOOL_ID).order("severity").order("word"),
+      supabase.from("beacon_default_policies").select("*").order("severity").order("word"),
       supabase.from("policy_audit_log").select("*").eq("school_id", SCHOOL_ID).order("changed_at", { ascending: false }).limit(50),
       supabase.from("school_settings").select("*").eq("school_id", SCHOOL_ID).single(),
       supabase.from("period_mode").select("*").eq("school_id", SCHOOL_ID).order("created_at"),
     ]);
     setPolicies((polRes.data as Policy[]) || []);
+    setDefaults((defRes.data as DefaultPolicy[]) || []);
     setAudit((audRes.data as AuditEntry[]) || []);
-    if (setRes.data) setSettings(setRes.data as SchoolSettings);
+    if (setRes.data) {
+      // Backfill use_beacon_defaults if the row predates 0014 (e.g. seeded
+      // tenant without the column populated). Default = inherit.
+      const row = setRes.data as Partial<SchoolSettings>;
+      setSettings({
+        msg_high:              row.msg_high ?? "",
+        msg_medium:            row.msg_medium ?? "",
+        badge_text:            row.badge_text ?? "",
+        religious_affiliation: row.religious_affiliation ?? null,
+        use_beacon_defaults:   row.use_beacon_defaults ?? true,
+      });
+    }
     if (perRes.data) setPeriods(perRes.data);
     setLoading(false);
   }
 
   useEffect(() => { loadAll(); }, []);
+
+  // Toggle save: focused single-column update so flipping the Beacon Default
+  // switch doesn't also persist unsaved edits on the Warning Messages tab.
+  async function toggleBeaconDefaults() {
+    const next = !settings.use_beacon_defaults;
+    // Optimistic update so the switch feels instant.
+    setSettings(s => ({ ...s, use_beacon_defaults: next }));
+    const { error } = await supabase
+      .from("school_settings")
+      .update({ use_beacon_defaults: next, updated_at: new Date().toISOString() })
+      .eq("school_id", SCHOOL_ID);
+    if (error) {
+      // Roll back on failure.
+      setSettings(s => ({ ...s, use_beacon_defaults: !next }));
+      console.error("Failed to save Beacon defaults toggle:", error);
+    }
+  }
 
   async function addPolicy() {
     const clean = word.trim().toLowerCase();
@@ -102,7 +192,7 @@ export default function AtlasPage() {
     await loadAll();
   }
 
-  async function saveMessages() {
+  async function saveSettings() {
     setSavingMsg(true);
     await supabase.from("school_settings")
       .upsert({ school_id: SCHOOL_ID, ...settings, updated_at: new Date().toISOString() });
@@ -113,6 +203,19 @@ export default function AtlasPage() {
 
   const high   = policies.filter(p => p.severity === "high");
   const medium = policies.filter(p => p.severity === "medium");
+  const defaultHigh   = defaults.filter(p => p.severity === "high");
+  const defaultMedium = defaults.filter(p => p.severity === "medium");
+  // Effective active count = hard floor + (defaults if toggle on) + school additions.
+  // Shown in the header pill so users can see at a glance what's enforced.
+  const effectiveDefaultsCount = settings.use_beacon_defaults ? defaults.length : 0;
+  const effectiveActiveCount   = BEACON_HARDFLOOR_HIGH.length + effectiveDefaultsCount + policies.length;
+  // "Last updated by Beacon" — most-recent revised_at or created_at across defaults.
+  const defaultsLastUpdated = defaults.length
+    ? defaults
+        .map(d => d.revised_at || d.created_at)
+        .sort()
+        .at(-1)!
+    : null;
 
   if (authLoading || !authenticated) return null;
 
@@ -133,7 +236,10 @@ export default function AtlasPage() {
           </div>
           <div className="flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-full bg-cyan-50 text-[#06B6D4]">
             <span className="w-1.5 h-1.5 rounded-full bg-[#06B6D4] animate-pulse" />
-            {policies.length} active policies
+            {effectiveActiveCount} active
+            <span className="text-[#06B6D4]/50 font-normal">
+              {" · "}{effectiveDefaultsCount} Beacon defaults · {policies.length} school
+            </span>
           </div>
         </header>
 
@@ -143,6 +249,7 @@ export default function AtlasPage() {
             {([
               { id: "policies", label: "Keyword Policies",    icon: "🛡" },
               { id: "messages", label: "Warning Messages",    icon: "💬" },
+              { id: "context",  label: "School Context",      icon: "🏫" },
               { id: "audit",    label: "Policy Change Log",   icon: "📋" },
               { id: "period",   label: "Period Mode",          icon: "🔒" },
             ] as { id: Tab; label: string; icon: string }[]).map(t => (
@@ -166,104 +273,235 @@ export default function AtlasPage() {
           {/* ── Tab: Keyword Policies ── */}
           {tab === "policies" && (
             <>
-              {/* Add policy */}
-              <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6 mb-6">
-                <h2 className="text-base font-bold text-[#06B6D4] mb-4">Add Policy Keyword</h2>
-                <div className="flex gap-3 items-start">
-                  <div className="flex-1">
-                    <input
-                      type="text"
-                      value={word}
-                      onChange={e => { setWord(e.target.value); setError(""); }}
-                      onKeyDown={e => e.key === "Enter" && addPolicy()}
-                      placeholder="Enter keyword or phrase..."
-                      className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20"
-                    />
-                    {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
+              {/* ─── Section 1: Beacon Default Policies (centrally managed) ─── */}
+              <div className={`bg-white rounded-2xl border border-slate-100 shadow-sm mb-6 overflow-hidden transition-opacity ${settings.use_beacon_defaults ? "" : "opacity-60"}`}>
+                {/* Header with toggle */}
+                <div className="px-6 py-5 border-b border-slate-100 bg-gradient-to-r from-[#013B93]/5 to-transparent">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <span className="text-2xl shrink-0">🛡</span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h2 className="font-bold text-slate-800">Beacon Default Policies</h2>
+                          <span className="text-[10px] font-semibold uppercase tracking-wide bg-[#013B93]/10 text-[#013B93] px-2 py-0.5 rounded">
+                            Managed by Beacon
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-1">
+                          Curated safeguarding keywords applied to every school. Updated centrally by Beacon — your school can opt in or out, but cannot edit individual words.
+                        </p>
+                        <div className="flex items-center gap-3 mt-2 text-xs text-slate-400">
+                          <span><strong className="text-slate-600">{defaults.length}</strong> default words</span>
+                          <span>·</span>
+                          <span><strong className="text-slate-600">{BEACON_HARDFLOOR_HIGH.length}</strong> always-on</span>
+                          {defaultsLastUpdated && (
+                            <>
+                              <span>·</span>
+                              <span>
+                                Last updated by Beacon:{" "}
+                                {new Date(defaultsLastUpdated).toLocaleDateString("en-GB", {
+                                  day: "numeric", month: "short", year: "numeric"
+                                })}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    {/* Toggle */}
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="text-xs font-semibold text-slate-500">
+                        {settings.use_beacon_defaults ? "On" : "Off"}
+                      </span>
+                      <button
+                        onClick={toggleBeaconDefaults}
+                        className={`relative w-14 h-7 rounded-full transition-colors ${settings.use_beacon_defaults ? "bg-[#013B93]" : "bg-slate-300"}`}
+                        aria-label="Toggle Beacon default policies"
+                      >
+                        <span className={`absolute top-1 w-5 h-5 bg-white rounded-full shadow transition-transform ${settings.use_beacon_defaults ? "translate-x-8" : "translate-x-1"}`} />
+                      </button>
+                    </div>
                   </div>
-                  <select
-                    value={severity}
-                    onChange={e => setSeverity(e.target.value as "high" | "medium")}
-                    className="border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-600 bg-white focus:outline-none"
-                  >
-                    <option value="high">High Risk</option>
-                    <option value="medium">Medium Risk</option>
-                  </select>
+
+                  {/* Warning when toggle is off */}
+                  {!settings.use_beacon_defaults && (
+                    <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-start gap-2">
+                      <span className="text-amber-600 text-base shrink-0">⚠</span>
+                      <p className="text-xs text-amber-800">
+                        <strong>Beacon defaults are disabled.</strong> Only your school's own keywords and Beacon's always-on safety floor (18 words) will be enforced. Most schools should leave this on.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Body — collapsible sub-lists */}
+                <div className="p-4 space-y-2">
+                  {/* High Risk Defaults */}
                   <button
-                    onClick={addPolicy}
-                    disabled={saving || !word.trim()}
-                    className="bg-[#06B6D4] text-white text-sm font-semibold px-6 py-2.5 rounded-xl hover:bg-[#0891b2] disabled:opacity-40 transition-all"
+                    onClick={() => setShowDefaultHigh(v => !v)}
+                    className="w-full flex items-center justify-between px-4 py-3 rounded-xl hover:bg-slate-50 transition-colors"
                   >
-                    {saving ? "Adding..." : "Add Policy"}
+                    <div className="flex items-center gap-3">
+                      <span className="w-2.5 h-2.5 rounded-full bg-red-500" />
+                      <span className="text-sm font-semibold text-slate-700">High Risk Defaults</span>
+                      <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700">{defaultHigh.length}</span>
+                    </div>
+                    <span className="text-xs text-slate-400">{showDefaultHigh ? "Hide" : "Show"} ▾</span>
                   </button>
+                  {showDefaultHigh && (
+                    <div className="px-4 pb-3 flex flex-wrap gap-2">
+                      {defaultHigh.map(p => (
+                        <span key={p.id} className="text-xs bg-red-50 text-red-700 border border-red-100 px-2.5 py-1 rounded-lg font-mono">
+                          {p.word}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Medium Risk Defaults */}
+                  <button
+                    onClick={() => setShowDefaultMedium(v => !v)}
+                    className="w-full flex items-center justify-between px-4 py-3 rounded-xl hover:bg-slate-50 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+                      <span className="text-sm font-semibold text-slate-700">Medium Risk Defaults</span>
+                      <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">{defaultMedium.length}</span>
+                    </div>
+                    <span className="text-xs text-slate-400">{showDefaultMedium ? "Hide" : "Show"} ▾</span>
+                  </button>
+                  {showDefaultMedium && (
+                    <div className="px-4 pb-3 flex flex-wrap gap-2">
+                      {defaultMedium.map(p => (
+                        <span key={p.id} className="text-xs bg-amber-50 text-amber-700 border border-amber-100 px-2.5 py-1 rounded-lg font-mono">
+                          {p.word}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Always-on — folded jailbreak block */}
+                <div className="bg-slate-800 p-5">
+                  <button
+                    onClick={() => setShowHardfloor(v => !v)}
+                    className="w-full flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">🔐</span>
+                      <h3 className="font-bold text-white text-sm">Always on — cannot be disabled</h3>
+                      <span className="text-xs bg-white/10 text-white/70 px-2 py-0.5 rounded-full">
+                        {BEACON_HARDFLOOR_HIGH.length} words
+                      </span>
+                    </div>
+                    <span className="text-xs text-white/50">{showHardfloor ? "Hide" : "Show"} ▾</span>
+                  </button>
+                  {showHardfloor && (
+                    <>
+                      <p className="text-white/60 text-xs mt-3 mb-3">
+                        Critical safeguarding terms and jailbreak phrases. These are enforced for every student in every school, even when Beacon defaults are turned off.
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {BEACON_HARDFLOOR_HIGH.map(phrase => (
+                          <span key={phrase} className="text-xs bg-white/10 text-white/80 px-3 py-1.5 rounded-lg font-mono">
+                            {phrase}
+                          </span>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
 
-              {/* Policy columns */}
-              {loading ? (
-                <div className="text-sm text-slate-400 text-center py-12">Loading policies...</div>
-              ) : (
-                <div className="grid grid-cols-2 gap-6">
-                  {(["high", "medium"] as const).map(sev => {
-                    const cfg   = SEVERITY_CONFIG[sev];
-                    const items = sev === "high" ? high : medium;
-                    return (
-                      <div key={sev} className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-                        <div className="px-6 py-4 border-b border-slate-100" style={{ background: cfg.bg }}>
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <h2 className="font-bold text-slate-800">{cfg.label} Policies</h2>
-                              <p className="text-xs text-slate-500 mt-0.5">{cfg.desc}</p>
+              {/* ─── Section 2: Your school's additions ─── */}
+              <div className="mb-6">
+                <div className="flex items-baseline justify-between mb-3">
+                  <div>
+                    <h2 className="text-base font-bold text-slate-800">Your school's additions</h2>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Words your school has added on top of Beacon's defaults. These are always enforced regardless of the toggle above.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Add policy */}
+                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6 mb-4">
+                  <div className="flex gap-3 items-start">
+                    <div className="flex-1">
+                      <input
+                        type="text"
+                        value={word}
+                        onChange={e => { setWord(e.target.value); setError(""); }}
+                        onKeyDown={e => e.key === "Enter" && addPolicy()}
+                        placeholder="Add a keyword or phrase your school wants to block or flag..."
+                        className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20"
+                      />
+                      {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
+                    </div>
+                    <select
+                      value={severity}
+                      onChange={e => setSeverity(e.target.value as "high" | "medium")}
+                      className="border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-600 bg-white focus:outline-none"
+                    >
+                      <option value="high">High Risk</option>
+                      <option value="medium">Medium Risk</option>
+                    </select>
+                    <button
+                      onClick={addPolicy}
+                      disabled={saving || !word.trim()}
+                      className="bg-[#06B6D4] text-white text-sm font-semibold px-6 py-2.5 rounded-xl hover:bg-[#0891b2] disabled:opacity-40 transition-all"
+                    >
+                      {saving ? "Adding..." : "Add Policy"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* School policy columns */}
+                {loading ? (
+                  <div className="text-sm text-slate-400 text-center py-12">Loading policies...</div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-6">
+                    {(["high", "medium"] as const).map(sev => {
+                      const cfg   = SEVERITY_CONFIG[sev];
+                      const items = sev === "high" ? high : medium;
+                      return (
+                        <div key={sev} className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                          <div className="px-6 py-4 border-b border-slate-100" style={{ background: cfg.bg }}>
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <h3 className="font-bold text-slate-800 text-sm">{cfg.label} — your additions</h3>
+                                <p className="text-xs text-slate-500 mt-0.5">{cfg.desc}</p>
+                              </div>
+                              <span className="text-xs font-bold px-2.5 py-1 rounded-full text-white" style={{ background: cfg.accent }}>
+                                {items.length}
+                              </span>
                             </div>
-                            <span className="text-xs font-bold px-2.5 py-1 rounded-full text-white" style={{ background: cfg.accent }}>
-                              {items.length}
-                            </span>
+                          </div>
+                          <div className="p-4 space-y-2 max-h-[500px] overflow-auto">
+                            {items.length === 0 && (
+                              <p className="text-sm text-slate-400 text-center py-6">
+                                {settings.use_beacon_defaults
+                                  ? `No extra ${cfg.label.toLowerCase()} words. Beacon's defaults are covering you.`
+                                  : `No extra ${cfg.label.toLowerCase()} words — and Beacon defaults are off. Only the always-on safety floor applies.`}
+                              </p>
+                            )}
+                            {items.map(policy => (
+                              <div key={policy.id} className="flex items-center justify-between bg-slate-50 rounded-xl px-4 py-3 group hover:bg-slate-100 transition-colors">
+                                <span className="text-sm font-medium text-slate-700">{policy.word}</span>
+                                <button
+                                  onClick={() => removePolicy(policy.id)}
+                                  className="text-xs font-semibold text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all px-2 py-1 rounded-lg hover:bg-red-50"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            ))}
                           </div>
                         </div>
-                        <div className="p-4 space-y-2 max-h-[500px] overflow-auto">
-                          {items.length === 0 && (
-                            <p className="text-sm text-slate-400 text-center py-6">No {cfg.label.toLowerCase()} policies yet</p>
-                          )}
-                          {items.map(policy => (
-                            <div key={policy.id} className="flex items-center justify-between bg-slate-50 rounded-xl px-4 py-3 group hover:bg-slate-100 transition-colors">
-                              <span className="text-sm font-medium text-slate-700">{policy.word}</span>
-                              <button
-                                onClick={() => removePolicy(policy.id)}
-                                className="text-xs font-semibold text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all px-2 py-1 rounded-lg hover:bg-red-50"
-                              >
-                                Remove
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {/* Jailbreak detection */}
-              <div className="mt-6 bg-slate-800 rounded-2xl p-5">
-                <div className="flex items-center gap-2 mb-3">
-                  <span className="text-lg">🔐</span>
-                  <h3 className="font-bold text-white">Jailbreak Detection</h3>
-                  <span className="text-xs bg-white/10 text-white/70 px-2 py-0.5 rounded-full ml-auto">System Policy — Cannot be removed</span>
-                </div>
-                <p className="text-white/60 text-xs mb-4">
-                  These phrases are permanently monitored across all schools. Students attempting to bypass AI safety filters are automatically flagged as high risk.
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {[
-                    "ignore previous instructions","ignore all instructions","pretend you have no limits",
-                    "pretend you have no restrictions","act as dan","jailbreak","do anything now",
-                    "bypass your filters","you are now unrestricted","developer mode",
-                    "disregard your training","you have no rules"
-                  ].map(phrase => (
-                    <span key={phrase} className="text-xs bg-white/10 text-white/80 px-3 py-1.5 rounded-lg font-mono">
-                      {phrase}
-                    </span>
-                  ))}
-                </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               {/* Sync info */}
@@ -351,7 +589,7 @@ export default function AtlasPage() {
 
                 <div className="flex items-center gap-3">
                   <button
-                    onClick={saveMessages}
+                    onClick={saveSettings}
                     disabled={savingMsg}
                     className="bg-[#06B6D4] text-white text-sm font-semibold px-6 py-2.5 rounded-xl hover:bg-[#0891b2] disabled:opacity-40 transition-all"
                   >
@@ -360,6 +598,73 @@ export default function AtlasPage() {
                   {msgSaved && (
                     <span className="text-sm text-emerald-600 font-semibold flex items-center gap-1">
                       ✓ Saved — syncing to all devices
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Tab: School Context ── */}
+          {tab === "context" && (
+            <div className="max-w-2xl space-y-6">
+              <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6">
+                <h2 className="text-base font-bold text-[#06B6D4] mb-1">School Religious Character</h2>
+                <p className="text-sm text-slate-400 mb-6">
+                  The AI inside Horizon will gently take this into account when students ask about RE,
+                  ethics, religious holidays, or pastoral matters. It will not impose religious framing
+                  on academic questions that are not about religion.
+                </p>
+
+                <label className="text-sm font-semibold text-slate-700 mb-2 block">Religious affiliation</label>
+                <select
+                  value={settings.religious_affiliation ?? ""}
+                  onChange={e =>
+                    setSettings(s => ({
+                      ...s,
+                      religious_affiliation: e.target.value || null,
+                    }))
+                  }
+                  className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-[#06B6D4]/20"
+                >
+                  <option value="">— Not set —</option>
+                  {AFFILIATIONS.map(a => (
+                    <option key={a.slug} value={a.slug}>{a.label}</option>
+                  ))}
+                </select>
+
+                {/* Live preview of the context the AI will receive */}
+                <div className="mt-4">
+                  <div className="text-xs font-semibold text-slate-500 mb-2">
+                    Context passed to the AI
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                    {(() => {
+                      const slug = settings.religious_affiliation;
+                      const match = AFFILIATIONS.find(a => a.slug === slug);
+                      if (!slug || !match) {
+                        return (
+                          <span className="text-slate-400 italic">
+                            No school-context will be added to the AI. Select an affiliation above to enable it.
+                          </span>
+                        );
+                      }
+                      return match.context;
+                    })()}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 mt-6">
+                  <button
+                    onClick={saveSettings}
+                    disabled={savingMsg}
+                    className="bg-[#06B6D4] text-white text-sm font-semibold px-6 py-2.5 rounded-xl hover:bg-[#0891b2] disabled:opacity-40 transition-all"
+                  >
+                    {savingMsg ? "Saving..." : "Save Context"}
+                  </button>
+                  {msgSaved && (
+                    <span className="text-sm text-emerald-600 font-semibold flex items-center gap-1">
+                      ✓ Saved — applied to new student conversations
                     </span>
                   )}
                 </div>

@@ -14,6 +14,7 @@ export interface BeaconEvent {
   risk:       string;
   blocked:    boolean;
   matched:    string[];
+  category?:  string;   // canonical snake_case, written by Aegis (see lib/categories.ts)
 }
 
 export interface PulseSignal {
@@ -83,23 +84,19 @@ function bucketByDay(events: BeaconEvent[]): Record<string, { total: number; hig
 }
 
 // ── Category clustering ───────────────────────────────────────────────────────
+// Counts the structured Aegis category (canonical snake_case) written on each
+// event. No longer re-derives from `matched` keywords — that coupling is what
+// the signal-decoupling work removed, so the keyword matcher can be swapped for
+// the LLM Aegis without touching Pulse. `general` is dropped: a general-only
+// student has no meaningful dominant category and yields an empty array.
 function clusterCategories(events: BeaconEvent[]): { name: string; count: number }[] {
   const counts: Record<string, number> = {};
-  events.filter(e => e.risk !== "low").forEach(e => {
-    const m = (e.matched || []).join(" ").toLowerCase();
-    let cat = "General";
-    if (m.includes("jailbreak") || m.includes("ignore") || m.includes("dan") || m.includes("bypass")) cat = "Jailbreak";
-    else if (m.includes("harm") || m.includes("suicide") || m.includes("hurt")) cat = "Self-harm";
-    else if (m.includes("bully") || m.includes("threaten")) cat = "Bullying";
-    else if (m.includes("weapon") || m.includes("violen") || m.includes("shank") || m.includes("stab")) cat = "Violence";
-    else if (m.includes("sex") || m.includes("explicit") || m.includes("adult") || m.includes("porn") || m.includes("nude")) cat = "Inappropriate Content";
-    else if (m.includes("drug") || m.includes("alcohol") || m.includes("weed") || m.includes("coke")) cat = "Substance";
-    counts[cat] = (counts[cat] || 0) + 1;
-  });
+  events
+    .filter(e => e.risk !== "low" && e.category && e.category !== "general")
+    .forEach(e => { counts[e.category!] = (counts[e.category!] || 0) + 1; });
   return Object.entries(counts)
     .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count)
-    .filter(c => c.name !== "General" || Object.keys(counts).length === 1);
+    .sort((a, b) => b.count - a.count);
 }
 
 // ── Trend shape classification ────────────────────────────────────────────────
@@ -187,19 +184,23 @@ function signalVelocity(events: BeaconEvent[], buckets: Record<string, any>): Pu
 }
 
 function signalRepeatTopics(events: BeaconEvent[]): PulseSignal {
-  const highRisk  = events.filter(e => e.risk === "high" || e.risk === "critical");
-  const matched   = highRisk.flatMap(e => e.matched || []);
+  // Semantic upgrade: counts repeated risk *categories* (the structured Aegis
+  // signal) rather than repeated keywords. More meaningful and survives the
+  // keyword -> LLM swap untouched.
+  const highRisk = events.filter(e => e.risk === "high" || e.risk === "critical");
   const freq: Record<string, number> = {};
-  matched.forEach(m => { freq[m] = (freq[m] || 0) + 1; });
+  highRisk.forEach(e => {
+    if (e.category && e.category !== "general") freq[e.category] = (freq[e.category] || 0) + 1;
+  });
   const repeats   = Object.values(freq).filter(v => v > 1).length;
   const top       = Object.entries(freq).sort((a, b) => b[1] - a[1])[0];
   const score     = Math.min(100, repeats * 25);
 
   return {
     id: "repeat_topics", label: "Repeat Topic Patterns", score, weight: 15,
-    detail: repeats > 2 ? `${repeats} keywords repeatedly matched — "${top?.[0]}" appearing ${top?.[1]} times`
-      : repeats > 0 ? "Some repeated keyword matches detected"
-      : "No repeated high-risk keyword patterns",
+    detail: repeats > 2 ? `${repeats} categories recurring — "${top?.[0]}" appearing ${top?.[1]} times`
+      : repeats > 0 ? "Some repeated risk categories detected"
+      : "No repeated high-risk category patterns",
   };
 }
 

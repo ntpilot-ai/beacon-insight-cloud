@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
 Respond ONLY with a JSON object, no markdown:
 {
   "risk": "low" | "medium" | "high",
-  "category": "academic_integrity" | "self_harm" | "violence" | "bullying" | "inappropriate_content" | "substance" | "radicalization" | "general",
+  "category": "academic_integrity" | "self_harm" | "violence" | "bullying" | "inappropriate_content" | "substance" | "radicalization" | "jailbreak" | "general",
   "reason": "one short sentence explaining the classification"
 }
 

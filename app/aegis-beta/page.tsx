@@ -28,6 +28,7 @@ import {
   STATUS_STYLE,
   type StudentStatus,
 } from "@/lib/student_status";
+import { categoryLabel } from "@/lib/categories";
 
 interface AegisEvent {
   id:         number;
@@ -38,6 +39,7 @@ interface AegisEvent {
   risk:       string;
   blocked:    boolean;
   matched:    string[];
+  category:   string | null;
 }
 
 interface AckRow {
@@ -52,18 +54,11 @@ interface SnoozeRow {
   broken_early: boolean;
 }
 
-// Category derivation — same logic as elsewhere in the app so a student's
-// dominant category reads the same on Aegis as it does on Pulse.
-function categoryFromMatched(matched: string[]): string {
-  if (!matched?.length) return "General";
-  const m = matched.join(" ").toLowerCase();
-  if (m.includes("jailbreak") || m.includes("ignore") || m.includes("dan") || m.includes("bypass")) return "Jailbreak";
-  if (m.includes("harm")      || m.includes("suicide"))                                              return "Self-harm";
-  if (m.includes("bully")     || m.includes("threaten"))                                             return "Bullying";
-  if (m.includes("weapon")    || m.includes("violen")  || m.includes("shank"))                       return "Violence";
-  if (m.includes("sex")       || m.includes("explicit") || m.includes("adult") || m.includes("porn")) return "Inappropriate Content";
-  if (m.includes("drug")      || m.includes("alcohol") || m.includes("weed"))                        return "Substance";
-  return "General";
+// Read the Aegis signal already stored on the event (snake_case canonical
+// vocabulary). No re-derivation from `matched` — the classifier wrote the
+// category at capture time, so Aegis, Pulse and the acks all agree.
+function eventCategory(e: AegisEvent): string {
+  return e.category || "general";
 }
 
 const RISK_CHIP: Record<string, { label: string; cls: string }> = {
@@ -255,7 +250,7 @@ function AegisBetaContent() {
       if (filterRisk === "medium"   && e.risk !== "medium")                                          return false;
       if (filterRisk === "blocked"  && !e.blocked)                                                   return false;
 
-      if (filterCategory !== "all" && categoryFromMatched(e.matched) !== filterCategory) return false;
+      if (filterCategory !== "all" && eventCategory(e) !== filterCategory) return false;
       if (filterPlatform !== "all" && e.platform !== filterPlatform)                     return false;
 
       const isDismissed = dismissed.has(e.id);
@@ -279,7 +274,7 @@ function AegisBetaContent() {
     setEscalateSubmitting(true);
     setEscalateError(null);
     try {
-      const category    = categoryFromMatched(escalating.matched);
+      const category    = eventCategory(escalating);
       const alertLevel  =
         escalating.risk === "critical" ? "critical" :
         escalating.risk === "high"     ? "high"     :
@@ -352,13 +347,13 @@ function AegisBetaContent() {
           <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)}
             className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs">
             <option value="all">Category: All</option>
-            <option value="Jailbreak">Jailbreak</option>
-            <option value="Self-harm">Self-harm</option>
-            <option value="Bullying">Bullying</option>
-            <option value="Violence">Violence</option>
-            <option value="Inappropriate Content">Inappropriate Content</option>
-            <option value="Substance">Substance</option>
-            <option value="General">General</option>
+            <option value="jailbreak">Jailbreak</option>
+            <option value="self_harm">Self-harm</option>
+            <option value="bullying">Bullying</option>
+            <option value="violence">Violence</option>
+            <option value="inappropriate_content">Inappropriate Content</option>
+            <option value="substance">Substance</option>
+            <option value="general">General</option>
           </select>
 
           <select value={filterPlatform} onChange={e => setFilterPlatform(e.target.value)}
@@ -435,7 +430,7 @@ function AegisBetaContent() {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredEvents.map(event => {
-                    const cat        = categoryFromMatched(event.matched);
+                    const cat        = categoryLabel(eventCategory(event));
                     const risk       = RISK_CHIP[event.risk] ?? RISK_CHIP.low;
                     const platLabel  = PLATFORM_LABEL[event.platform] ?? event.platform;
                     const status     = statusByStudent.get(event.student_id);

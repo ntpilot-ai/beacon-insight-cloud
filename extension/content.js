@@ -1,8 +1,20 @@
-console.log("Beacon Sentinel v8.3 Active");
+console.log("Beacon Sentinel v8.4 Active");
 
 const SUPABASE_URL     = "https://eyvwvmjcuahduuokpmng.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV5dnd2bWpjdWFoZHV1b2twbW5nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkyMzAxNzEsImV4cCI6MjA5NDgwNjE3MX0.erku-Tq0F2qPmXdjlCZ8v2EMuzm2RokUEwcoRgE0ZlM";
 const POLICY_CACHE_TTL = 60 * 1000; // re-fetch every 60 seconds
+
+// Hard floor — always enforced even if a school sets use_beacon_defaults = false.
+// Mirrors BEACON_HARDFLOOR_HIGH in app/api/chat/route.ts. 6 critical safeguarding
+// terms + 12 jailbreak phrases. Updates here must be mirrored in the chat API.
+const BEACON_HARDFLOOR_HIGH = [
+  "kill", "bomb", "suicide", "terrorist", "school shooting", "nazi",
+  "ignore previous instructions", "ignore all instructions",
+  "pretend you have no limits", "pretend you have no restrictions",
+  "act as dan", "jailbreak", "do anything now", "bypass your filters",
+  "you are now unrestricted", "developer mode",
+  "disregard your training", "you have no rules",
+];
 
 let BLOCK_UNTIL = 0; // timestamp until which all submissions are blocked
 
@@ -47,20 +59,29 @@ async function initializePolicies() {
 async function refreshPoliciesFromCloud() {
   try {
     const schoolId = await getSchoolId();
+    const authHeaders = { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}` };
 
-    // Fetch policies and settings in parallel
-    const [polRes, setRes] = await Promise.all([
+    // Three sources, fetched in parallel:
+    //   - School's own additions (beacon_policies)
+    //   - Beacon defaults (beacon_default_policies) — toggleable per school
+    //   - School settings: includes use_beacon_defaults + the UI strings
+    const [schoolPolRes, defaultPolRes, setRes] = await Promise.all([
       fetch(
         `${SUPABASE_URL}/rest/v1/beacon_policies?school_id=eq.${schoolId}&select=word,severity`,
-        { headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}` } }
+        { headers: authHeaders }
       ),
       fetch(
-        `${SUPABASE_URL}/rest/v1/school_settings?school_id=eq.${schoolId}&select=msg_high,msg_medium,badge_text`,
-        { headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}` } }
+        `${SUPABASE_URL}/rest/v1/beacon_default_policies?select=word,severity`,
+        { headers: authHeaders }
+      ),
+      fetch(
+        `${SUPABASE_URL}/rest/v1/school_settings?school_id=eq.${schoolId}&select=msg_high,msg_medium,badge_text,use_beacon_defaults`,
+        { headers: authHeaders }
       )
     ]);
 
-    // Save settings
+    // Save settings + read the Beacon-defaults toggle
+    let useBeaconDefaults = true; // default if no row / fetch error
     if (setRes.ok) {
       const setData = await setRes.json();
       if (setData?.[0]) {
@@ -69,16 +90,37 @@ async function refreshPoliciesFromCloud() {
         if (label && setData[0].badge_text) {
           label.textContent = setData[0].badge_text;
         }
+        if (typeof setData[0].use_beacon_defaults === "boolean") {
+          useBeaconDefaults = setData[0].use_beacon_defaults;
+        }
       }
     }
 
-    // Process policies
-    if (!polRes.ok) throw new Error(`HTTP ${polRes.status}`);
-    const data = await polRes.json();
+    // School policies (always applied)
+    if (!schoolPolRes.ok) throw new Error(`HTTP ${schoolPolRes.status}`);
+    const schoolData = await schoolPolRes.json();
 
+    // Beacon defaults (applied only if the school hasn't opted out)
+    let defaultData = [];
+    if (useBeaconDefaults && defaultPolRes.ok) {
+      defaultData = await defaultPolRes.json();
+    }
+
+    // Merge into the final match set. Hard floor (always) + defaults (if on) +
+    // school additions. Use Sets so a word in multiple layers doesn't duplicate.
+    const highSet   = new Set(BEACON_HARDFLOOR_HIGH);
+    const mediumSet = new Set();
+    for (const p of defaultData) {
+      if (p.severity === "high")   highSet.add(p.word);
+      if (p.severity === "medium") mediumSet.add(p.word);
+    }
+    for (const p of schoolData) {
+      if (p.severity === "high")   highSet.add(p.word);
+      if (p.severity === "medium") mediumSet.add(p.word);
+    }
     const policies = {
-      highRisk:   data.filter(p => p.severity === "high").map(p => p.word),
-      mediumRisk: data.filter(p => p.severity === "medium").map(p => p.word),
+      highRisk:   [...highSet],
+      mediumRisk: [...mediumSet],
     };
 
     if (policies.highRisk.length || policies.mediumRisk.length) {
@@ -87,18 +129,20 @@ async function refreshPoliciesFromCloud() {
         beaconPolicies:   policies,
         beaconPoliciesAt: Date.now(),
       });
-      console.log("Beacon policies synced from cloud", policies);
+      console.log(
+        `Beacon policies synced from cloud (defaults ${useBeaconDefaults ? "on" : "off"})`,
+        policies
+      );
     }
   } catch (err) {
     console.warn("Beacon policy sync failed, using cached/defaults", err);
 
-    // Hard fallback if nothing cached
+    // Hard fallback if nothing cached — use the full 18-word hard floor so
+    // we're never weaker than the chat API's always-on minimum.
     if (!ACTIVE_POLICIES) {
       ACTIVE_POLICIES = {
-        highRisk:   ["kill", "bomb", "suicide", "terrorist",
-                     "ignore previous instructions", "jailbreak",
-                     "act as dan", "do anything now", "pretend you have no limits"],
-        mediumRisk: ["violence", "weapon", "hate"],
+        highRisk:   [...BEACON_HARDFLOOR_HIGH],
+        mediumRisk: [],
       };
     }
   }
@@ -523,6 +567,11 @@ async function logAndSync(prompt, result) {
     risk:      result.level,
     blocked:   result.level === "high",
     matched:   result.matched,
+    // Aegis signal: present when the LLM classifier ran; the keyword fallback
+    // (calculateRisk) leaves these undefined -> treated as a keyword-sourced row.
+    category:    result.category || "general",
+    rationale:   result.rationale || null,
+    risk_source: result.ai ? "llm" : "keyword",
   };
 
   await saveTelemetry(telemetry);
@@ -550,10 +599,11 @@ async function classifyWithAI(prompt) {
     if (!result?.risk) return null;
 
     return {
-      level:    result.risk,
-      matched:  result.reason ? [result.reason] : [],
-      category: result.category || "general",
-      ai:       true,
+      level:     result.risk,
+      matched:   result.reason ? [result.reason] : [],
+      category:  result.category || "general",
+      rationale: result.reason || null,   // surfaced as its own field -> beacon_events.rationale
+      ai:        true,
     };
   } catch {
     return null;
@@ -614,6 +664,9 @@ async function sendToBeaconCloud(telemetry) {
         risk:            telemetry.risk,
         blocked:         telemetry.blocked,
         matched:         telemetry.matched,
+        category:        telemetry.category,
+        rationale:       telemetry.rationale,
+        risk_source:     telemetry.risk_source,
         hostname:        telemetry.hostname,
       }),
     });
